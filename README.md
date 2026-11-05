@@ -1,47 +1,94 @@
-# Svelte + TS + Vite
+# Beat Visualiser
 
-This template should help get you started developing with Svelte and TypeScript in Vite.
+A desktop app (macOS and Windows) that turns a beat into a TikTok-ready 9:16 video.
 
-## Recommended IDE Setup
+It controls FL Studio, **automatically records a plugin window while the beat plays**, and puts that recording into a retro hardware-style video together with the real waveform of the track. No screen recorder, no video editing.
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode).
+> **Status:** early development. The repo is currently a Vite + Svelte + TypeScript scaffold. Nothing below is working yet; this README describes what is being built.
 
-## Need an official Svelte framework?
+## How it works
 
-Check out [SvelteKit](https://github.com/sveltejs/kit#readme), which is also powered by Vite. Deploy anywhere with its serverless-first approach and adapt to various platforms, with out of the box support for TypeScript, SCSS, and Less, and easily-added support for mdsvex, GraphQL, PostCSS, Tailwind CSS, and more.
+1. **One-time setup.** The app installs a small FL Studio MIDI script. You select it once in FL's MIDI settings and press "Test connection".
+2. **Drop your beat** (an exported WAV or MP3).
+3. **The best section is picked for you:** the strongest 15, 30 or 60 seconds, cut on the bar. You can drag it.
+4. **Pick a plugin window** from the list of open windows in FL.
+5. **Record.** The app jumps FL to the section start, plays, records the window, and stops FL at the end.
+6. **Pick a theme** and see a live preview: your recording on the device screen, with the waveform and a moving playhead.
+7. **Add text** (optional): beat name, BPM, key, producer tag. BPM and key are filled in from the audio analysis.
+8. **Export** a 1080×1920 MP4.
 
-## Technical considerations
+## The look
 
-**Why use this over SvelteKit?**
+Fake hardware: a brushed metal device, blue LCD screens with grid lines and scanlines, chunky coloured buttons and knobs. Think early-2000s hardware sampler. All visuals are rendered with WebGL shaders, and all designs are original.
 
-- It brings its own routing solution which might not be preferable for some users.
-- It is first and foremost a framework that just happens to use Vite under the hood, not a Vite app.
+## Principles
 
-This template contains as little as possible to get started with Vite + TypeScript + Svelte, while taking into account the developer experience with regards to HMR and intellisense. It demonstrates capabilities on par with the other `create-vite` templates and is a good starting point for beginners dipping their toes into a Vite + Svelte project.
+- **Defaults over choices.** Every step has a good default. Drop a file, pick a window, press export.
+- **Set up once, then one click.**
+- **What you see is what you get.** The preview and the exported video are identical, frame for frame.
+- **Musically correct.** Clips start on a downbeat, last a whole number of bars, and the plugin recording stays in sync with the audio.
+- **Private by default.** Your audio and recordings never leave your computer. There is no backend.
 
-Should you later need the extended capabilities and extensibility provided by SvelteKit, the template has been structured similarly to SvelteKit so that it is easy to migrate.
+## Output
 
-**Why `global.d.ts` instead of `compilerOptions.types` inside `jsconfig.json` or `tsconfig.json`?**
+| Property    | Value                                             |
+| ----------- | ------------------------------------------------- |
+| Resolution  | 1080 × 1920 (9:16)                                |
+| Frame rate  | 30 fps (60 fps option)                            |
+| Video       | H.264                                             |
+| Audio       | AAC, taken from the beat file (never the recording) |
+| Container   | MP4                                               |
+| Lengths     | 15 / 30 / 60 s, always a whole number of bars     |
 
-Setting `compilerOptions.types` shuts out all other types not explicitly listed in the configuration. Using triple-slash references keeps the default TypeScript setting of accepting type information from the entire workspace, while also adding `svelte` and `vite/client` type information.
+## Tech stack
 
-**Why include `.vscode/extensions.json`?**
+| Part             | Choice                                                                      |
+| ---------------- | --------------------------------------------------------------------------- |
+| Desktop shell    | [Tauri](https://tauri.app/) (Rust)                                          |
+| UI               | Svelte 5, TypeScript, Vite, Tailwind v4                                     |
+| Rendering        | Three.js: one fullscreen quad with GLSL fragment shaders                    |
+| Window capture   | ScreenCaptureKit (macOS), Windows.Graphics.Capture (Windows)                |
+| FL Studio control | FL's built-in MIDI Controller Scripting (Python), driven over a virtual MIDI port |
+| Audio analysis   | BPM, beats, loudness and onsets for picking the highlight                   |
 
-Other templates indirectly recommend extensions via the README, but this file allows VS Code to prompt the user to install the recommended extension upon opening the project.
+The engine (audio, analysis, rendering, export) is plain TypeScript and never imports Svelte. The UI only calls into it. Themes are plugins: each one implements a single `Visualizer` interface and declares its own controls.
 
-**Why enable `allowJs` in the TS template?**
+## Project structure (planned)
 
-While `allowJs: false` would indeed prevent the use of `.js` files in the project, it does not prevent the use of JavaScript syntax in `.svelte` files. In addition, it would force `checkJs: false`, bringing the worst of both worlds: not being able to guarantee the entire codebase is TypeScript, and also having worse typechecking for the existing JavaScript. In addition, there are valid use cases in which a mixed codebase may be relevant.
-
-**Why is HMR not preserving my local component state?**
-
-HMR state preservation comes with a number of gotchas! It has been disabled by default in both `svelte-hmr` and `@sveltejs/vite-plugin-svelte` due to its often surprising behavior. You can read the details [here](https://github.com/rixo/svelte-hmr#svelte-hmr).
-
-If you have state that's important to retain within a component, consider creating an external store which would not be replaced by HMR.
-
-```ts
-// store.ts
-// An extremely simple external store
-import { writable } from 'svelte/store'
-export default writable(0)
 ```
+src/
+  engine/          plain TypeScript, no Svelte
+    audio/         decoding, waveform peaks
+    analysis/      BPM, beats, highlight scoring
+    render/        Three.js setup, shaders, frame loop
+    export/        export pipeline
+    visualizers/   one folder per theme
+  ui/              Svelte components
+src-tauri/         Rust: window capture, MIDI, file system, encoding
+fl-script/         the FL Studio MIDI script installed into FL
+```
+
+## Development
+
+Requirements: [Node.js](https://nodejs.org/) and, once Tauri is added, the [Rust toolchain](https://rustup.rs/).
+
+```sh
+npm install
+npm run dev      # start the Vite dev server
+npm run check    # type-check Svelte and TypeScript
+npm run build    # production build
+```
+
+Tauri commands will be added here once `src-tauri/` exists.
+
+## Roadmap
+
+- [ ] **Phase 0, setup:** Tailwind, ESLint + Prettier, engine/UI folders, Tauri
+- [ ] **Phase 1, spike:** list windows from Rust, record a plugin window on macOS and Windows, FL script for play/stop, trigger FL from the app
+- [ ] **Phase 2, audio in:** drop zone, decoding, waveform with playhead
+- [ ] **Phase 3, first theme:** LCD sampler theme with the recording as a video texture
+- [ ] **Phase 4:** automatic highlight detection
+- [ ] **Phase 5:** full record flow and audio sync
+- [ ] **Phase 6:** MP4 export
+- [ ] **Phase 7:** onboarding and polish
+- [ ] **Phase 8:** signed releases and testing with producers
