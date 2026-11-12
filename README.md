@@ -4,7 +4,7 @@ A desktop app (macOS and Windows) that turns a beat into a TikTok-ready 9:16 vid
 
 It controls FL Studio, **automatically records a plugin window while the beat plays**, and puts that recording into a retro hardware-style video together with the real waveform of the track. No screen recorder, no video editing.
 
-> **Status:** early development. The repo is currently a Vite + Svelte + TypeScript scaffold. Nothing below is working yet; this README describes what is being built.
+> **Status:** early development. The repo is currently an empty Tauri + Svelte app shell. Nothing below is working yet; this README describes what is being built.
 
 ## How it works
 
@@ -70,20 +70,23 @@ fl-script/         the FL Studio MIDI script installed into FL
 
 ## Development
 
-Requirements: [Node.js](https://nodejs.org/) and, once Tauri is added, the [Rust toolchain](https://rustup.rs/).
+Requirements: [Node.js](https://nodejs.org/), the [Rust toolchain](https://rustup.rs/), and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS (Xcode on macOS; Microsoft C++ Build Tools and WebView2 on Windows).
 
 ```sh
 npm install
-npm run dev      # start the Vite dev server
-npm run check    # type-check Svelte and TypeScript
-npm run build    # production build
+npm run tauri dev     # run the desktop app with hot reload
+npm run tauri build   # build the installable app
+npm run dev           # run only the web UI in a browser
+npm run check         # type-check Svelte and TypeScript
+npm run lint          # ESLint
+npm run format        # format everything with Prettier
 ```
 
-Tauri commands will be added here once `src-tauri/` exists.
+The first `tauri dev` compiles all Rust dependencies and takes a few minutes. Later runs are fast.
 
 ## Roadmap
 
-- [ ] **Phase 0, setup:** Tailwind, ESLint + Prettier, engine/UI folders, Tauri
+- [x] **Phase 0, setup:** Tailwind, ESLint + Prettier, engine/UI folders, Tauri
 - [ ] **Phase 1, spike:** list windows from Rust, record a plugin window on macOS and Windows, FL script for play/stop, trigger FL from the app
 - [ ] **Phase 2, audio in:** drop zone, decoding, waveform with playhead
 - [ ] **Phase 3, first theme:** LCD sampler theme with the recording as a video texture

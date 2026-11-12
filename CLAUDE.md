@@ -202,12 +202,14 @@ Phases (the full checklist lives in Bogdan's "Beat Visualizer Build Plan" page):
 - **Phase 8, Ship and validate:** code signing (Apple notarization, Windows signing), Tauri bundler + auto-updater, post 10+ videos, test with 5 to 10 producers.
 - **Later (only after validation):** more themes (paper, generative), multiple plugin windows, other DAWs, VST sync plugin, accounts/presets/payments, direct posting.
 
-**Current repo state (as of 2026-11-05):**
+**Current repo state (as of 2026-11-12):**
 
-- Vite + Svelte 5 + TypeScript scaffolded (default counter template still in place), one commit.
-- `tailwindcss` and `@tailwindcss/vite` are installed but **not wired up yet**: `vite.config.ts` doesn't include the plugin and `app.css` doesn't import Tailwind. (They're also in `dependencies`; they belong in `devDependencies`.)
-- Not done yet: ESLint/Prettier, `engine/` and `ui/` folders, Tauri (`src-tauri/`), GitHub remote.
-- So: Phase 0 is partly done. Next up is finishing Phase 0, then the Phase 1 spike.
+- Phase 0 is done. Next up is the Phase 1 spike.
+- Vite + Svelte 5 + TypeScript, Tailwind v4 wired up, template removed. `src/ui/App.svelte` is a placeholder; `src/engine/` is empty (`.gitkeep`).
+- ESLint (flat config, `eslint.config.js`) + Prettier (no semicolons, single quotes). ESLint enforces the engine rule: `src/engine/**` can't import `svelte`, `.svelte` files or `ui/`, and can't use runes.
+- Tauri 2 in `src-tauri/` (crate `beat-visualiser`, lib `beat_visualiser_lib`, identifier `com.bogdanmocanu.beatvisualiser`). `npm run tauri dev` works on macOS. Vite runs on a fixed port 5173 (`strictPort`) because Tauri's `devUrl` points there.
+- Pushed to GitHub: `github.com/720kbps/Beat-Visualiser`.
+- Not set up or tested yet: the Windows build machine (needs MSVC Build Tools + WebView2).
 
 ## Risks to keep in mind
 
