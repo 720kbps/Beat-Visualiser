@@ -48,31 +48,31 @@ Every feature has to pass these:
 
 ## Output spec
 
-| Property | Value |
-| --- | --- |
-| Resolution | 1080 × 1920 (9:16) |
-| Frame rate | 30 fps default, 60 fps option |
-| Video | H.264 |
-| Audio | AAC, 44.1 or 48 kHz, 192 to 320 kbps, **always from the beat file**, never the recorded audio |
-| Container | MP4 |
-| Lengths | 15 / 30 / 60 s, always a whole number of bars |
-| Safe zone | Keep text and the main screen out of the bottom ~20% and right ~12% (TikTok UI overlays) |
+| Property   | Value                                                                                         |
+| ---------- | --------------------------------------------------------------------------------------------- |
+| Resolution | 1080 × 1920 (9:16)                                                                            |
+| Frame rate | 30 fps default, 60 fps option                                                                 |
+| Video      | H.264                                                                                         |
+| Audio      | AAC, 44.1 or 48 kHz, 192 to 320 kbps, **always from the beat file**, never the recorded audio |
+| Container  | MP4                                                                                           |
+| Lengths    | 15 / 30 / 60 s, always a whole number of bars                                                 |
+| Safe zone  | Keep text and the main screen out of the bottom ~20% and right ~12% (TikTok UI overlays)      |
 
 ## Architecture decisions (already made, don't relitigate without a reason)
 
-| Decision | Why |
-| --- | --- |
-| **Tauri desktop app** (not a website, not Electron) | Automatic window capture and FL control need native access. Tauri is far smaller than Electron. |
-| **Svelte 5 + TypeScript + Vite** for the UI | The UI is small; little boilerplate; no virtual DOM fighting the render loop. Not React, not SvelteKit (yet). |
-| **Tailwind v4** for the control panel only | Visuals are in WebGL, so CSS framework barely matters. v4 uses `@tailwindcss/vite` and `@import "tailwindcss"`, no `tailwind.config.js`. |
-| **Framework-free engine** | Audio, analysis, rendering, export are plain TS that never import Svelte (enforce with ESLint). The UI only calls into the engine. |
-| **Themes as plugins** | Each visual style implements one `Visualizer` interface and declares its own params; the UI builds controls from them. Adding a theme never touches the UI. |
-| **One render path** for preview and export | Same `render(frame, params)` call. `FrameData` is computed from time, not the live audio clock, so export is deterministic. |
-| **Three.js, one fullscreen quad + fragment shaders** | LCD tint, glow, scanlines, light leak in GLSL. No React Three Fiber. |
-| **Native window capture**, not OBS | ScreenCaptureKit (macOS), Windows.Graphics.Capture (Windows). Users install nothing extra. Rust crates like `scap` / `windows-capture`. |
-| **FL Studio controlled via its built-in MIDI Controller Scripting (Python)** | Not Flapi (overkill, needs Python on user's machine), not simulated keypresses (needs focus, no timing). |
-| **No MCP layer** | MCP is for AI tool calls; nothing here needs an AI in the loop. |
-| **No backend in the MVP** | Zero cost per user, private. Accounts/payments/posting come later and only after validation. |
+| Decision                                                                     | Why                                                                                                                                                         |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Tauri desktop app** (not a website, not Electron)                          | Automatic window capture and FL control need native access. Tauri is far smaller than Electron.                                                             |
+| **Svelte 5 + TypeScript + Vite** for the UI                                  | The UI is small; little boilerplate; no virtual DOM fighting the render loop. Not React, not SvelteKit (yet).                                               |
+| **Tailwind v4** for the control panel only                                   | Visuals are in WebGL, so CSS framework barely matters. v4 uses `@tailwindcss/vite` and `@import "tailwindcss"`, no `tailwind.config.js`.                    |
+| **Framework-free engine**                                                    | Audio, analysis, rendering, export are plain TS that never import Svelte (enforce with ESLint). The UI only calls into the engine.                          |
+| **Themes as plugins**                                                        | Each visual style implements one `Visualizer` interface and declares its own params; the UI builds controls from them. Adding a theme never touches the UI. |
+| **One render path** for preview and export                                   | Same `render(frame, params)` call. `FrameData` is computed from time, not the live audio clock, so export is deterministic.                                 |
+| **Three.js, one fullscreen quad + fragment shaders**                         | LCD tint, glow, scanlines, light leak in GLSL. No React Three Fiber.                                                                                        |
+| **Native window capture**, not OBS                                           | ScreenCaptureKit (macOS), Windows.Graphics.Capture (Windows). Users install nothing extra. Rust crates like `scap` / `windows-capture`.                     |
+| **FL Studio controlled via its built-in MIDI Controller Scripting (Python)** | Not Flapi (overkill, needs Python on user's machine), not simulated keypresses (needs focus, no timing).                                                    |
+| **No MCP layer**                                                             | MCP is for AI tool calls; nothing here needs an AI in the loop.                                                                                             |
+| **No backend in the MVP**                                                    | Zero cost per user, private. Accounts/payments/posting come later and only after validation.                                                                |
 
 ### Planned folder structure
 
@@ -93,22 +93,22 @@ fl-script/         the FL Studio MIDI script that gets installed into FL
 
 ```ts
 interface Visualizer {
-  id: string;
-  name: string;
-  params: ParamSchema;          // sliders, colors, toggles it exposes
-  init(ctx: RenderContext): void;
-  render(frame: FrameData, params: ParamValues): void;
-  dispose(): void;
+  id: string
+  name: string
+  params: ParamSchema // sliders, colors, toggles it exposes
+  init(ctx: RenderContext): void
+  render(frame: FrameData, params: ParamValues): void
+  dispose(): void
 }
 
 interface FrameData {
-  time: number;                 // seconds into the clip
-  progress: number;             // 0..1, drives the playhead
-  peaks: Float32Array;          // precomputed waveform of the clip
-  rms: number;                  // current loudness
-  bass: number;                 // current low-frequency energy
-  beat: boolean;                // true on a beat frame
-  plugin?: VideoFrameSource;    // the recorded plugin clip at this time
+  time: number // seconds into the clip
+  progress: number // 0..1, drives the playhead
+  peaks: Float32Array // precomputed waveform of the clip
+  rms: number // current loudness
+  bass: number // current low-frequency energy
+  beat: boolean // true on a beat frame
+  plugin?: VideoFrameSource // the recorded plugin clip at this time
 }
 ```
 
@@ -130,14 +130,14 @@ Per-frame values (playhead, levels) live in plain variables inside the engine, d
 
 **Automatic vs onboarding:**
 
-| Step | Automatic? |
-| --- | --- |
-| Copy the script into FL's `Settings/Hardware` folder (default `Documents/Image-Line/FL Studio/Settings/Hardware/`) | Yes; ask for the folder only if the user moved FL's data folder |
-| Virtual MIDI port | macOS: yes, app creates it via CoreMIDI (midir supports virtual ports). Windows: loopback port via Windows MIDI Services (Windows 11), possibly a one-time manual step; loopMIDI fallback (check license) |
-| Select port + script in FL's MIDI settings | **No.** FL stores this in its own settings; don't write to them. One-time onboarding step with a GIF |
-| Verify connection | Yes, "Test connection" button |
-| macOS screen recording permission | One-time system prompt, explained in onboarding |
-| Open the plugin window | User, per video. Plugin may need to be "Detached" in FL |
+| Step                                                                                                               | Automatic?                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Copy the script into FL's `Settings/Hardware` folder (default `Documents/Image-Line/FL Studio/Settings/Hardware/`) | Yes; ask for the folder only if the user moved FL's data folder                                                                                                                                           |
+| Virtual MIDI port                                                                                                  | macOS: yes, app creates it via CoreMIDI (midir supports virtual ports). Windows: loopback port via Windows MIDI Services (Windows 11), possibly a one-time manual step; loopMIDI fallback (check license) |
+| Select port + script in FL's MIDI settings                                                                         | **No.** FL stores this in its own settings; don't write to them. One-time onboarding step with a GIF                                                                                                      |
+| Verify connection                                                                                                  | Yes, "Test connection" button                                                                                                                                                                             |
+| macOS screen recording permission                                                                                  | One-time system prompt, explained in onboarding                                                                                                                                                           |
+| Open the plugin window                                                                                             | User, per video. Plugin may need to be "Detached" in FL                                                                                                                                                   |
 
 ## Window capture
 
@@ -156,7 +156,7 @@ Per-frame values (playhead, levels) live in plain variables inside the engine, d
 3. **Cross-correlate** the recorded audio with the beat file to find the exact offset (fine-tuning).
 4. Final video uses the beat file's audio only.
 
-Target: recording lines up with the beat to within one frame. A custom VST/CLAP plugin (JUCE) for sample-exact sync is a *later* option, only if this isn't good enough.
+Target: recording lines up with the beat to within one frame. A custom VST/CLAP plugin (JUCE) for sample-exact sync is a _later_ option, only if this isn't good enough.
 
 ## Highlight detection
 
@@ -192,7 +192,7 @@ round length to a multiple of 4 or 8 bars
 Phases (the full checklist lives in Bogdan's "Beat Visualizer Build Plan" page):
 
 - **Phase 0, Setup:** Vite + Svelte + TS, Tailwind, ESLint + Prettier, engine/ui folders, Rust toolchain, add Tauri, push to GitHub.
-- **Phase 1, Spike (DO FIRST):** list windows from Rust; record 10 s of a Serum window on macOS and Windows (test docked vs Detached on Windows); write the FL MIDI script (play/stop); trigger play from the Tauri app via a virtual MIDI port. *Done when one button starts FL and records the Serum window on both OSes.*
+- **Phase 1, Spike (DO FIRST):** list windows from Rust; record 10 s of a Serum window on macOS and Windows (test docked vs Detached on Windows); write the FL MIDI script (play/stop); trigger play from the Tauri app via a virtual MIDI port. _Done when one button starts FL and records the Serum window on both OSes._
 - **Phase 2, Audio in:** drop zone, decode, peaks, waveform with playhead.
 - **Phase 3, First theme:** Three.js quad at 1080×1920, Visualizer interface, LCD sampler theme, recorded clip as video texture, shader effects, original device frame (no brands, no AI images).
 - **Phase 4, Highlight detection.**
@@ -211,15 +211,15 @@ Phases (the full checklist lives in Bogdan's "Beat Visualizer Build Plan" page):
 
 ## Risks to keep in mind
 
-| Risk | Response |
-| --- | --- |
+| Risk                                                                                  | Response                                                               |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | FL plugin windows on Windows may be child windows of FL's main window → capture fails | Require "Detached"; prove it in the Phase 1 spike before anything else |
-| No built-in virtual MIDI on Windows 10 | Windows 11 first; loopMIDI fallback after checking its license |
-| Recording drifts out of sync | Script timing anchor + cross-correlation |
-| FL updates change scripting behaviour | Keep the script to a few commands; test on FL updates |
-| Code signing cost/effort | Budget for it before the first public release |
-| Plugin names/logos (Serum) in marketing | Market as "works with any plugin window" |
-| Theme assets resembling real hardware brands | Original designs or procedural shaders only |
+| No built-in virtual MIDI on Windows 10                                                | Windows 11 first; loopMIDI fallback after checking its license         |
+| Recording drifts out of sync                                                          | Script timing anchor + cross-correlation                               |
+| FL updates change scripting behaviour                                                 | Keep the script to a few commands; test on FL updates                  |
+| Code signing cost/effort                                                              | Budget for it before the first public release                          |
+| Plugin names/logos (Serum) in marketing                                               | Market as "works with any plugin window"                               |
+| Theme assets resembling real hardware brands                                          | Original designs or procedural shaders only                            |
 
 ## Open questions
 

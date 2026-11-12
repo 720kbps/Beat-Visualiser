@@ -31,25 +31,25 @@ Fake hardware: a brushed metal device, blue LCD screens with grid lines and scan
 
 ## Output
 
-| Property    | Value                                             |
-| ----------- | ------------------------------------------------- |
-| Resolution  | 1080 × 1920 (9:16)                                |
-| Frame rate  | 30 fps (60 fps option)                            |
-| Video       | H.264                                             |
-| Audio       | AAC, taken from the beat file (never the recording) |
-| Container   | MP4                                               |
-| Lengths     | 15 / 30 / 60 s, always a whole number of bars     |
+| Property   | Value                                               |
+| ---------- | --------------------------------------------------- |
+| Resolution | 1080 × 1920 (9:16)                                  |
+| Frame rate | 30 fps (60 fps option)                              |
+| Video      | H.264                                               |
+| Audio      | AAC, taken from the beat file (never the recording) |
+| Container  | MP4                                                 |
+| Lengths    | 15 / 30 / 60 s, always a whole number of bars       |
 
 ## Tech stack
 
-| Part             | Choice                                                                      |
-| ---------------- | --------------------------------------------------------------------------- |
-| Desktop shell    | [Tauri](https://tauri.app/) (Rust)                                          |
-| UI               | Svelte 5, TypeScript, Vite, Tailwind v4                                     |
-| Rendering        | Three.js: one fullscreen quad with GLSL fragment shaders                    |
-| Window capture   | ScreenCaptureKit (macOS), Windows.Graphics.Capture (Windows)                |
+| Part              | Choice                                                                            |
+| ----------------- | --------------------------------------------------------------------------------- |
+| Desktop shell     | [Tauri](https://tauri.app/) (Rust)                                                |
+| UI                | Svelte 5, TypeScript, Vite, Tailwind v4                                           |
+| Rendering         | Three.js: one fullscreen quad with GLSL fragment shaders                          |
+| Window capture    | ScreenCaptureKit (macOS), Windows.Graphics.Capture (Windows)                      |
 | FL Studio control | FL's built-in MIDI Controller Scripting (Python), driven over a virtual MIDI port |
-| Audio analysis   | BPM, beats, loudness and onsets for picking the highlight                   |
+| Audio analysis    | BPM, beats, loudness and onsets for picking the highlight                         |
 
 The engine (audio, analysis, rendering, export) is plain TypeScript and never imports Svelte. The UI only calls into it. Themes are plugins: each one implements a single `Visualizer` interface and declares its own controls.
 
