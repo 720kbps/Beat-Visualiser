@@ -7,6 +7,7 @@
 #
 #   note 60 (note-on, velocity > 0)  ->  play
 #   note 61 (note-on, velocity > 0)  ->  stop
+#   note 63 (note-on, velocity > 0)  ->  rewind to the song start
 #
 # Everything is on MIDI channel 1. See fl-script/README.md for the protocol
 # and how to install the script.
@@ -22,6 +23,7 @@ CHANNEL = 0  # MIDI channel 1. In the status byte, channels are counted from 0.
 NOTE_PLAY = 60
 NOTE_STOP = 61
 # NOTE_PING = 62 is reserved for a future "Test connection" message.
+NOTE_REWIND = 63
 
 
 def OnInit():
@@ -65,3 +67,9 @@ def OnMidiMsg(event):
     elif note == NOTE_STOP:
         transport.stop()
         print('Beat Visualiser: stop')
+    elif note == NOTE_REWIND:
+        # Without a mode argument, setSongPos takes a fraction of the song
+        # length (0.0 = start, 1.0 = end) and needs a float, hence 0.0.
+        # In pattern mode this moves the pattern position instead.
+        transport.setSongPos(0.0)
+        print('Beat Visualiser: rewind')

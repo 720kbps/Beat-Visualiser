@@ -2,19 +2,20 @@
 Test the Beat Visualiser FL Studio script without the Tauri app.
 
 This script pretends to be the app: it creates a MIDI output port called
-"Beat Visualiser" and sends the same PLAY / STOP notes the app will send.
+"Beat Visualiser" and sends the same PLAY / STOP / REWIND notes the app sends.
 
 Protocol (must match the FL script and the Rust app):
     MIDI channel 1 (channel=0 in mido)
     PLAY = note_on 60, velocity 127, then note_off 60
     STOP = note_on 61, velocity 127, then note_off 61
+    REWIND = note_on 63, velocity 127, then note_off 63 (back to the song start)
 
 Setup (once, from the repo root):
     python3 -m venv fl-script/.venv
     fl-script/.venv/bin/pip install -r fl-script/requirements.txt
 
 Run (from the repo root):
-    fl-script/.venv/bin/python fl-script/test_midi.py            # interactive: p / s / q
+    fl-script/.venv/bin/python fl-script/test_midi.py            # interactive: p / s / r / q
     fl-script/.venv/bin/python fl-script/test_midi.py --demo     # play 5 s, then stop
     fl-script/.venv/bin/python fl-script/test_midi.py --self-test  # check without FL
     fl-script/.venv/bin/python fl-script/test_midi.py --port "loopMIDI Port"  # use an existing port
@@ -46,6 +47,7 @@ PORT_NAME = 'Beat Visualiser'
 CHANNEL = 0  # mido counts channels from 0, so this is MIDI channel 1
 NOTE_PLAY = 60
 NOTE_STOP = 61
+NOTE_REWIND = 63
 
 
 def send_note(port, note):
@@ -81,7 +83,7 @@ def interactive(port):
     """Read commands from the keyboard until the user quits."""
     print()
     print('The port stays open while this runs. Commands (then Enter):')
-    print('  p = play    s = stop    q = quit')
+    print('  p = play    s = stop    r = rewind    q = quit')
     while True:
         try:
             command = input('> ').strip().lower()
@@ -95,10 +97,13 @@ def interactive(port):
         elif command == 's':
             print('STOP')
             send_note(port, NOTE_STOP)
+        elif command == 'r':
+            print('REWIND')
+            send_note(port, NOTE_REWIND)
         elif command == 'q':
             break
         elif command != '':
-            print('Unknown command. Use p, s or q.')
+            print('Unknown command. Use p, s, r or q.')
 
 
 def demo(port):
@@ -114,7 +119,7 @@ def demo(port):
 
 def self_test():
     """Check the protocol without FL: open our own virtual port as an input
-    and make sure the PLAY and STOP notes arrive as expected."""
+    and make sure the PLAY, STOP and REWIND notes arrive as expected."""
     if sys.platform == 'win32':
         print('Self-test needs virtual ports, which only work on macOS.')
         sys.exit(1)
@@ -136,6 +141,7 @@ def self_test():
 
     send_note(out_port, NOTE_PLAY)
     send_note(out_port, NOTE_STOP)
+    send_note(out_port, NOTE_REWIND)
     time.sleep(0.3)  # let the messages arrive
 
     received = list(in_port.iter_pending())
@@ -151,10 +157,12 @@ def self_test():
         ('note_off', NOTE_PLAY, 0),
         ('note_on', NOTE_STOP, 127),
         ('note_off', NOTE_STOP, 0),
+        ('note_on', NOTE_REWIND, 127),
+        ('note_off', NOTE_REWIND, 0),
     ]
     actual = [(m.type, m.note, m.velocity) for m in received if m.channel == CHANNEL]
     if actual == expected:
-        print('PASS: all 4 messages arrived on channel 1 with the right notes')
+        print('PASS: all 6 messages arrived on channel 1 with the right notes')
     else:
         print('FAIL: expected', expected)
         print('      got     ', actual)
@@ -162,7 +170,7 @@ def self_test():
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Send PLAY/STOP notes to the FL script.')
+    parser = argparse.ArgumentParser(description='Send PLAY/STOP/REWIND notes to the FL script.')
     parser.add_argument('--port', help='use an existing output port instead of a virtual one')
     parser.add_argument('--demo', action='store_true', help='play for 5 s, then stop and exit')
     parser.add_argument('--self-test', action='store_true', help='check the messages without FL')
