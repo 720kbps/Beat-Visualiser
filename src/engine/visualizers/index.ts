@@ -1,0 +1,10 @@
+// All themes the app knows about. To add a theme: import it and put it in this
+// list. The first one is the default.
+import type { Visualizer } from './types'
+
+export const visualizers: Visualizer[] = []
+
+// The theme with this id, or undefined if there is none.
+export function getVisualizer(id: string): Visualizer | undefined {
+  return visualizers.find((v) => v.id === id)
+}
