@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Phase 1 spike: list open windows from Rust. Throwaway UI.
+  // Phase 1 spike: list open windows and record one. Throwaway UI.
   import { invoke } from '@tauri-apps/api/core'
 
   // Matches the Rust `WindowInfo` struct (fields stay snake_case).
@@ -18,6 +18,8 @@
   let titleFilter = $state('Ogun')
   let windows = $state<WindowInfo[]>([])
   let error = $state('')
+  let recording = $state(false)
+  let savedPath = $state('')
 
   async function listWindows() {
     error = ''
@@ -27,6 +29,23 @@
     } catch (e) {
       windows = []
       error = String(e)
+    }
+  }
+
+  async function recordWindow(windowId: number) {
+    error = ''
+    savedPath = ''
+    recording = true
+    try {
+      // Rust returns the path of the saved .mov file.
+      savedPath = await invoke<string>('record_window', {
+        windowId,
+        seconds: 10,
+      })
+    } catch (e) {
+      error = String(e)
+    } finally {
+      recording = false
     }
   }
 </script>
@@ -41,12 +60,21 @@
       bind:value={titleFilter}
     />
     <button
-      class="rounded bg-sky-600 px-3 py-1 hover:bg-sky-500"
+      class="rounded bg-sky-600 px-3 py-1 hover:bg-sky-500 disabled:opacity-50"
       onclick={listWindows}
+      disabled={recording}
     >
       List windows
     </button>
   </div>
+
+  {#if recording}
+    <p class="mb-4 text-amber-400">Recording…</p>
+  {/if}
+
+  {#if savedPath}
+    <p class="mb-4 text-green-400">Saved: {savedPath}</p>
+  {/if}
 
   {#if error}
     <p class="mb-4 text-red-400">{error}</p>
@@ -58,6 +86,13 @@
         {w.app_name} | {w.title} | {w.width}x{w.height} | id {w.id}
         {#if !w.on_screen}(off screen){/if}
         {#if w.is_fl}<span class="text-sky-300">FL</span>{/if}
+        <button
+          class="ml-2 rounded bg-red-700 px-2 hover:bg-red-600 disabled:opacity-50"
+          onclick={() => recordWindow(w.id)}
+          disabled={recording}
+        >
+          Record 10 s
+        </button>
       </li>
     {/each}
   </ul>

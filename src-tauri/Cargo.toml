@@ -25,7 +25,8 @@ tauri = { version = "2.12.5", features = [] }
 tauri-plugin-log = "2"
 
 # macOS only: ScreenCaptureKit (list and later capture windows) and
-# CoreGraphics (check the Screen Recording permission).
+# CoreGraphics (check the Screen Recording permission). The macos_15_0
+# feature enables SCRecordingOutput, which writes the video file for us.
 [target.'cfg(target_os = "macos")'.dependencies]
-screencapturekit = { version = "11.1.2", features = ["macos_14_0"] }
+screencapturekit = { version = "11.1.2", features = ["macos_15_0"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGWindow"] }
