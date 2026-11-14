@@ -30,6 +30,11 @@ pub struct Take {
     /// time FL needs to actually start its audio. Phase 5 refines it by
     /// cross-correlating recorded system audio with the beat file.
     pub play_offset: f64,
+    /// True if the window's app made an audible sound during the take. The
+    /// .mov always has an audio track (AAC, 48 kHz stereo, same time 0 as
+    /// the video); when this is false that track is silent, so audio sync
+    /// can't work and only `play_offset` is left.
+    pub has_audio: bool,
 }
 
 // Keep recording a little after the section ends, so the last frames are
@@ -67,6 +72,7 @@ pub fn record_take(
     if let Err(e) = fl_midi::send_to_fl(port, fl_midi::send_stop) {
         log::error!("Could not stop FL after the take: {e}");
     }
+    let has_audio = recording.has_audio();
     let path = recording.finish();
 
     // Report the first failure: the take itself, then closing the file.
@@ -74,6 +80,7 @@ pub fn record_take(
     Ok(Take {
         path: path?,
         play_offset,
+        has_audio,
     })
 }
 
@@ -113,17 +120,24 @@ mod tests {
         let name = format!("Beat Visualiser Take Test {}", std::process::id());
         let port = FlPort(Mutex::new(fl_midi::create_port(&name)));
 
+        // TAKE_TEST_APP=Music picks a window of an app whose name contains
+        // that text. Handy for checking audio: only the window's own app is
+        // heard. TAKE_TEST_KEEP=1 keeps the file so it can be inspected.
+        let app = std::env::var("TAKE_TEST_APP").unwrap_or_default();
         let windows = crate::window_list::list_windows(None).expect("list windows");
         let window = windows
             .iter()
-            .find(|w| w.on_screen)
-            .expect("no on-screen window");
+            .find(|w| w.on_screen && w.app_name.contains(&app))
+            .expect("no matching on-screen window");
         println!("recording [{}] {}", window.app_name, window.title);
 
         let take = record_take(&port, window.id, 2, &std::env::temp_dir()).expect("take failed");
         println!("saved: {}", take.path);
         println!("play_offset: {:.3} s", take.play_offset);
+        println!("has_audio: {}", take.has_audio);
         assert!(take.play_offset >= 0.0 && take.play_offset < 1.0);
-        std::fs::remove_file(&take.path).ok();
+        if std::env::var("TAKE_TEST_KEEP").is_err() {
+            std::fs::remove_file(&take.path).ok();
+        }
     }
 }

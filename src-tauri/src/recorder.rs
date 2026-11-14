@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 //   let t0 = rec.wait_until_started(..)?;       // the file's time 0
 //   ... send play to FL ...
 //   rec.record_for(length)?;                    // just waits
+//   let heard = rec.has_audio();                // any sound in the take?
 //   let path = rec.finish()?;                   // closes the file
 // Always call finish() once start() was called, also after an error, so the
 // stream stops and the file gets closed.
@@ -32,6 +33,9 @@ pub struct Recording {
     // waiting. (Arc = shared ownership, Mutex = safe access from threads.)
     error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     started_at: std::sync::Arc<std::sync::Mutex<Option<Instant>>>,
+    // Set by the audio callback once a buffer with real sound (not silence)
+    // arrived. A plain bool shared between threads is an AtomicBool.
+    heard_audio: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(target_os = "macos")]
@@ -48,6 +52,7 @@ impl Recording {
         };
         use screencapturekit::stream::configuration::SCCaptureResolutionType;
         use screencapturekit::stream::delegate_trait::StreamCallbacks;
+        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::{Arc, Mutex};
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -95,11 +100,17 @@ impl Recording {
             .with_minimum_frame_interval(&CMTime::new(1, 60))
             .with_pixel_format(PixelFormat::BGRA)
             .with_shows_cursor(false)
+            // Audio for sync (CLAUDE.md, Sync): the recording output writes
+            // it as an AAC track in the same .mov. With a single-window
+            // filter macOS captures the audio of the app that owns the
+            // window (FL Studio), not the whole system. Our own process is
+            // excluded so the preview's sound never ends up in the take.
+            .with_captures_audio(true)
+            .with_excludes_current_process_audio(true)
+            .with_sample_rate(48000)
+            .with_channel_count(2)
             .with_capture_resolution_type(SCCaptureResolutionType::Best)
             .map_err(|e| format!("Could not configure capture: {e}"))?;
-        // Phase 5: system audio for sync goes here:
-        // .with_captures_audio(true).with_excludes_current_process_audio(true)
-        // (needs SCRecordingOutput or a stream output that also writes audio).
 
         // Build the output file path, e.g. ~/Movies/Beat Visualiser/take-1763112345.mov
         std::fs::create_dir_all(folder)
@@ -140,7 +151,7 @@ impl Recording {
 
         // Fires if the stream stops by itself, e.g. the window was closed.
         let stream_error = Arc::clone(&error);
-        let stream = SCStream::new_with_delegate(
+        let mut stream = SCStream::new_with_delegate(
             &filter,
             &config,
             StreamCallbacks::new().on_error(move |e| {
@@ -148,6 +159,23 @@ impl Recording {
             }),
         )
         .map_err(|e| format!("Could not create capture stream: {e}"))?;
+
+        // The recording output writes the audio track by itself. This extra
+        // audio callback only looks at the samples to tell whether the
+        // window's app made any sound during the take (FL may be muted, or
+        // the user picked a window of another app).
+        let heard_audio = Arc::new(AtomicBool::new(false));
+        let heard_slot = Arc::clone(&heard_audio);
+        stream
+            .add_output_handler(
+                move |sample: CMSampleBuffer, _kind: SCStreamOutputType| {
+                    if !heard_slot.load(Ordering::Relaxed) && is_audible(&sample) {
+                        heard_slot.store(true, Ordering::Relaxed);
+                    }
+                },
+                SCStreamOutputType::Audio,
+            )
+            .map_err(|e| format!("Could not set up audio capture: {e}"))?;
 
         stream
             .add_recording_output(&output)
@@ -159,6 +187,7 @@ impl Recording {
             path,
             error,
             started_at,
+            heard_audio,
         })
     }
 
@@ -206,6 +235,12 @@ impl Recording {
         }
     }
 
+    /// True once the window's app played something audible during the take.
+    /// The file always gets an audio track; without sound it's just silence.
+    pub fn has_audio(&self) -> bool {
+        self.heard_audio.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Stops capturing, closes the file and returns its full path.
     pub fn finish(self) -> Result<String, String> {
         // Removing the only recording output stops the stream and waits until
@@ -233,6 +268,26 @@ impl Recording {
     }
 }
 
+// True if any sample in this audio buffer is louder than about -60 dB.
+// ScreenCaptureKit delivers 32-bit float samples, one buffer per channel.
+// Silence from an app that plays nothing comes through as exact zeros.
+#[cfg(target_os = "macos")]
+fn is_audible(sample: &screencapturekit::cm::CMSampleBuffer) -> bool {
+    let Ok(list) = sample.audio_buffer_list() else {
+        return false;
+    };
+    for buffer in list.iter() {
+        // Split the raw bytes into groups of 4, each one f32.
+        let (samples, _rest) = buffer.data().as_chunks::<4>();
+        for bytes in samples {
+            if f32::from_ne_bytes(*bytes).abs() > 0.001 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 // Windows: not implemented yet (Windows.Graphics.Capture comes later). Same
 // methods so the take code compiles; prepare() fails before anything happens.
 #[cfg(not(target_os = "macos"))]
@@ -254,6 +309,10 @@ impl Recording {
 
     pub fn record_for(&self, _length: Duration) -> Result<(), String> {
         Err("Window recording is only implemented on macOS for now.".to_string())
+    }
+
+    pub fn has_audio(&self) -> bool {
+        false
     }
 
     pub fn finish(self) -> Result<String, String> {
