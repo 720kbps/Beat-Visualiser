@@ -11,12 +11,17 @@
 // protocol is a different origin from the page, so we request it with
 // crossOrigin = 'anonymous'; Tauri answers every asset response with
 // `Access-Control-Allow-Origin: <the window's origin>`, which passes the check.
+//
+// Alignment: a take starts recording a moment before FL starts playing, so
+// the beat's second 0 is at `offset` seconds in the video (the take's
+// play_offset). sync() shows video time = beat time + offset.
 
 export type PluginClip = {
   video: HTMLVideoElement
   duration: number // seconds
   width: number // video pixels
   height: number
+  offset: number // video seconds at beat time 0, see the top of the file
   // Keeps the video in step with the beat. Call once per preview frame.
   sync(time: number, playing: boolean): void
   dispose(): void // stops the video and frees its decoder
@@ -33,11 +38,13 @@ const PAUSED_TOLERANCE = 0.5 / 60
 const SEEK_THRESHOLD = 0.5
 const CATCH_UP_RATE = 0.1 // ±10% speed while catching up
 
-export function loadPluginClip(url: string): Promise<PluginClip> {
+// `offset`: the take's play_offset. 0 for a recording without one (the video
+// then simply starts with the beat).
+export function loadPluginClip(url: string, offset = 0): Promise<PluginClip> {
   const video = document.createElement('video')
   video.muted = true
   video.playsInline = true // no fullscreen takeover (matters on iOS-style WebKit)
-  video.loop = false // sync() wraps the time itself
+  video.loop = false // past the end we hold the last frame
   video.preload = 'auto'
   video.crossOrigin = 'anonymous' // must be set before src, see the top of the file
 
@@ -56,7 +63,7 @@ export function loadPluginClip(url: string): Promise<PluginClip> {
         reject(new Error('The recording has no length (empty or broken file).'))
         return
       }
-      resolve(createClip(video, duration))
+      resolve(createClip(video, duration, offset))
     }
 
     function onError() {
@@ -72,12 +79,16 @@ export function loadPluginClip(url: string): Promise<PluginClip> {
   })
 }
 
-function createClip(video: HTMLVideoElement, duration: number): PluginClip {
+function createClip(
+  video: HTMLVideoElement,
+  duration: number,
+  offset: number,
+): PluginClip {
   // Preview only. Export will set currentTime for every frame and wait for it.
   //
-  // The clip time is the beat time wrapped into the clip, so a 10 s recording
-  // repeats over a longer beat.
-  // Phase 5: real alignment with the recorded section (and no wrapping).
+  // The clip time is the beat time plus the offset. Before the video starts
+  // we show its first frame, after its end we hold the last frame: the
+  // recording covers one section, it doesn't repeat.
   //
   // While playing we let the video run on its own clock and only correct it
   // when it drifts. Seeking every frame would stutter: each seek makes the
@@ -85,17 +96,22 @@ function createClip(video: HTMLVideoElement, duration: number): PluginClip {
   // takes time, during which the beat keeps going, so after a seek the video
   // is already a little behind; correcting that with another seek would loop
   // forever. So small drifts are fixed by playing slightly faster or slower,
-  // and only big jumps (user seek, wrap to the start) use a seek.
+  // and only big jumps (user seek) use a seek.
   function sync(time: number, playing: boolean) {
-    const target = time % duration
+    const wanted = time + offset
+    const target = Math.min(Math.max(wanted, 0), duration)
     // Not while a seek is still running: currentTime is the seek target then.
     if (video.seeking) return
 
-    if (!playing) {
+    // Outside the recording (before its start or after its end) the video
+    // stands still on its first or last frame, even while the beat plays.
+    const outside = wanted <= 0 || wanted >= duration
+    if (!playing || outside) {
       if (!video.paused) video.pause()
       if (video.playbackRate !== 1) video.playbackRate = 1
-      // Paused: show the frame at the beat's position (also after a seek of
-      // the beat while paused). Half a frame of slack, because a browser may
+      // Show the frame at the beat's position (also after a seek of the beat
+      // while paused), clamped to the first/last frame. Half a frame of
+      // slack, because a browser may
       // report the time of the frame it landed on rather than the exact
       // value we asked for; without it we'd seek again every frame.
       if (Math.abs(video.currentTime - target) > PAUSED_TOLERANCE) {
@@ -104,7 +120,8 @@ function createClip(video: HTMLVideoElement, duration: number): PluginClip {
       return
     }
 
-    // drift > 0: the video is ahead of the beat
+    // drift > 0: the video is ahead of the beat. `ended` also seeks: play()
+    // on an ended video would restart it from 0.
     const drift = video.currentTime - target
     if (Math.abs(drift) > SEEK_THRESHOLD || video.ended) {
       video.currentTime = target
@@ -130,6 +147,7 @@ function createClip(video: HTMLVideoElement, duration: number): PluginClip {
     duration,
     width: video.videoWidth,
     height: video.videoHeight,
+    offset,
     sync,
     dispose: () => unload(video),
   }

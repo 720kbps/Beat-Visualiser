@@ -1,5 +1,7 @@
 <script lang="ts">
-  // Phase 1 spike: play/stop FL, list open windows and record one. Throwaway UI.
+  // One-button flow: drop the beat, pick the plugin window, pick a length,
+  // press "Play & record". FL plays from the song start while the app records
+  // the window; the recording then shows in the preview, lined up with the beat.
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import DropZone from './DropZone.svelte'
   import Waveform from './Waveform.svelte'
@@ -27,6 +29,12 @@
     height: number
     on_screen: boolean
     is_fl: boolean
+  }
+
+  // Matches the Rust `Take` struct (take.rs).
+  type Take = {
+    path: string
+    play_offset: number // video seconds at which FL started playing
   }
 
   // The dropped beat. `$state.raw` instead of `$state`: plain `$state` wraps
@@ -107,7 +115,9 @@
   let clipRequest = 0
 
   // Loads a recording by its file path and makes it the current clip.
-  async function loadClip(path: string) {
+  // `offset`: where beat time 0 is in the video (a take's play_offset).
+  // Returns true if this clip is now shown.
+  async function loadClip(path: string, offset = 0): Promise<boolean> {
     const request = ++clipRequest
     clipError = ''
     clipLoading = true
@@ -116,18 +126,20 @@
       // from disk (allowed folder: assetProtocol.scope in tauri.conf.json).
       // It streams with HTTP range requests, so big files aren't read into
       // memory, and its CORS headers keep the video usable as a WebGL texture.
-      const next = await loadPluginClip(convertFileSrc(path))
+      const next = await loadPluginClip(convertFileSrc(path), offset)
       if (request !== clipRequest) {
         next.dispose() // a newer request or Clear came in meanwhile
-        return
+        return false
       }
       clip?.dispose()
       clip = next
       clipPath = path
+      return true
     } catch (e) {
       if (request === clipRequest) {
         clipError = e instanceof Error ? e.message : String(e)
       }
+      return false
     } finally {
       if (request === clipRequest) clipLoading = false
     }
@@ -138,7 +150,7 @@
     try {
       const path = await invoke<string | null>('latest_recording')
       if (path) {
-        await loadClip(path)
+        await loadClip(path) // offset 0: we don't know when FL started
       } else {
         clipError = 'No recordings yet. Record a window first.'
       }
@@ -156,7 +168,7 @@
     clipLoading = false
   }
 
-  // "spike-1794617731.mov" from the full path (/ on macOS, \ on Windows).
+  // "take-1794617731.mov" from the full path (/ on macOS, \ on Windows).
   function fileName(path: string): string {
     return path.split(/[\\/]/).pop() ?? path
   }
@@ -181,11 +193,81 @@
   // Default: Ogun, FL Studio's built-in synth.
   let titleFilter = $state('Ogun')
   let windows = $state<WindowInfo[]>([])
-  let error = $state('')
-  let recording = $state(false)
-  let savedPath = $state('')
+  let windowsError = $state('')
+  // The plugin window to record (its id from list_windows), null = none picked.
+  let selectedWindowId = $state<number | null>(null)
 
-  // Last FL command result, e.g. "Sent play" or the error from Rust.
+  async function listWindows() {
+    windowsError = ''
+    try {
+      // Tauri maps the camelCase key `titleFilter` to the Rust arg `title_filter`.
+      windows = await invoke<WindowInfo[]>('list_windows', { titleFilter })
+    } catch (e) {
+      windows = []
+      windowsError = String(e)
+    }
+    // Forget the selection if that window is gone (or now off screen).
+    const still = windows.find((w) => w.id === selectedWindowId)
+    if (!still || !still.on_screen) selectedWindowId = null
+  }
+
+  // Take length in seconds. The spec lengths; the take is capped to the beat.
+  const LENGTHS = [15, 30, 60]
+  let length = $state(15)
+  // What we really record: the chosen length, but never longer than the beat.
+  let takeSeconds = $derived(
+    decoded
+      ? Math.max(1, Math.min(length, Math.floor(decoded.duration)))
+      : length,
+  )
+
+  let recording = $state(false)
+  // Whole seconds since "Play & record" was pressed. Only a UI counter,
+  // updated 4 times a second; not render-loop data.
+  let recordingElapsed = $state(0)
+  let takeStatus = $state('') // e.g. "Done — press Play to preview"
+  let takeError = $state('')
+
+  let canRecord = $derived(
+    decoded !== null && selectedWindowId !== null && !recording,
+  )
+
+  // The one button: FL plays from the start while Rust records the window,
+  // then the recording goes into the preview with its play offset.
+  async function playAndRecord() {
+    if (selectedWindowId === null) return
+    // Don't play the beat in the app on top of FL.
+    player?.pause()
+    takeError = ''
+    takeStatus = ''
+    recording = true
+    recordingElapsed = 0
+    const seconds = takeSeconds
+    const startedAt = performance.now()
+    const timer = setInterval(() => {
+      const elapsed = Math.floor((performance.now() - startedAt) / 1000)
+      recordingElapsed = Math.min(elapsed, seconds)
+    }, 250)
+
+    try {
+      const take = await invoke<Take>('record_take', {
+        windowId: selectedWindowId,
+        seconds,
+      })
+      if (await loadClip(take.path, take.play_offset)) {
+        // Back to the start, so Play shows the take from its first beat.
+        player?.seek(0)
+        takeStatus = 'Done — press Play to preview'
+      }
+    } catch (e) {
+      takeError = String(e)
+    } finally {
+      clearInterval(timer)
+      recording = false
+    }
+  }
+
+  // Debug: last FL command result, e.g. "Sent play" or the error from Rust.
   let flStatus = $state('')
 
   async function sendToFl(command: 'fl_play' | 'fl_stop', label: string) {
@@ -195,36 +277,6 @@
     } catch (e) {
       flStatus = String(e)
     }
-  }
-
-  async function listWindows() {
-    error = ''
-    try {
-      // Tauri maps the camelCase key `titleFilter` to the Rust arg `title_filter`.
-      windows = await invoke<WindowInfo[]>('list_windows', { titleFilter })
-    } catch (e) {
-      windows = []
-      error = String(e)
-    }
-  }
-
-  async function recordWindow(windowId: number) {
-    error = ''
-    savedPath = ''
-    recording = true
-    try {
-      // Rust returns the path of the saved .mov file.
-      savedPath = await invoke<string>('record_window', {
-        windowId,
-        seconds: 10,
-      })
-    } catch (e) {
-      error = String(e)
-    } finally {
-      recording = false
-    }
-    // Show the new recording on the device screen right away.
-    if (savedPath) await loadClip(savedPath)
   }
 </script>
 
@@ -239,7 +291,7 @@
   <div class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-8">
     <div>
       <section class="mb-6">
-        <h2 class="mb-2 font-semibold">Beat</h2>
+        <h2 class="mb-2 font-semibold">1. Beat</h2>
         <DropZone onfile={onBeatFile} />
         {#if beat}
           <p class="mt-2 text-sm text-zinc-300">
@@ -264,22 +316,111 @@
       </section>
 
       <section class="mb-6">
-        <h2 class="mb-2 font-semibold">FL Studio</h2>
-        <div class="flex items-center gap-2">
+        <h2 class="mb-2 font-semibold">2. Plugin window</h2>
+        <div class="mb-2 flex gap-2">
+          <input
+            class="rounded bg-zinc-800 px-2 py-1"
+            placeholder="Title contains (empty = all)"
+            bind:value={titleFilter}
+          />
           <button
-            class="rounded bg-green-700 px-3 py-1 hover:bg-green-600"
-            onclick={() => sendToFl('fl_play', 'play')}
+            class="rounded bg-sky-600 px-3 py-1 hover:bg-sky-500 disabled:opacity-50"
+            onclick={listWindows}
+            disabled={recording}
           >
-            Play
+            List windows
           </button>
-          <button
-            class="rounded bg-zinc-700 px-3 py-1 hover:bg-zinc-600"
-            onclick={() => sendToFl('fl_stop', 'stop')}
-          >
-            Stop
-          </button>
-          <span class="text-sm text-zinc-400">{flStatus}</span>
         </div>
+        {#if windowsError}
+          <p class="mb-2 text-sm text-red-400">{windowsError}</p>
+        {/if}
+        <!-- One radio per window; the whole row is the label, so it's clickable. -->
+        <ul class="space-y-1 font-mono text-sm">
+          {#each windows as w (w.id)}
+            <li>
+              <label
+                class={[
+                  'flex cursor-pointer items-center gap-2 rounded px-2 py-1',
+                  w.id === selectedWindowId
+                    ? 'bg-sky-800 text-white'
+                    : 'hover:bg-zinc-800',
+                  !w.on_screen && 'cursor-not-allowed opacity-50',
+                ]}
+              >
+                <input
+                  type="radio"
+                  name="plugin-window"
+                  value={w.id}
+                  bind:group={selectedWindowId}
+                  disabled={!w.on_screen || recording}
+                />
+                <span class="truncate">
+                  {w.app_name} | {w.title} | {w.width}×{w.height}
+                </span>
+                {#if !w.on_screen}
+                  <span class="text-zinc-400">(off screen)</span>
+                {/if}
+                {#if w.is_fl}<span class="text-sky-300">FL</span>{/if}
+              </label>
+            </li>
+          {/each}
+        </ul>
+      </section>
+
+      <section class="mb-6">
+        <h2 class="mb-2 font-semibold">3. Length</h2>
+        <div class="flex items-center gap-2">
+          {#each LENGTHS as seconds (seconds)}
+            <button
+              class={[
+                'rounded px-3 py-1 disabled:opacity-50',
+                seconds === length
+                  ? 'bg-sky-600 text-white'
+                  : 'bg-zinc-700 hover:bg-zinc-600',
+              ]}
+              onclick={() => (length = seconds)}
+              disabled={recording}
+            >
+              {seconds} s
+            </button>
+          {/each}
+          {#if decoded && takeSeconds < length}
+            <span class="text-sm text-zinc-400">
+              The beat is shorter: records {takeSeconds} s
+            </span>
+          {/if}
+        </div>
+      </section>
+
+      <section class="mb-6">
+        <button
+          class="rounded-lg bg-red-700 px-6 py-3 text-lg font-bold hover:bg-red-600 disabled:opacity-50"
+          onclick={playAndRecord}
+          disabled={!canRecord}
+        >
+          Play & record
+        </button>
+        <p class="mt-2 text-sm text-zinc-400">
+          FL Studio: open the same beat, Song mode, MIDI script "Beat
+          Visualiser" enabled. After updating the script, click "Reload script"
+          in FL's Script output window.
+        </p>
+        {#if !decoded || selectedWindowId === null}
+          <p class="mt-1 text-sm text-zinc-500">
+            Needs a beat and a selected plugin window.
+          </p>
+        {/if}
+        {#if recording}
+          <p class="mt-2 text-amber-400">
+            Recording… {recordingElapsed} / {takeSeconds} s
+          </p>
+        {/if}
+        {#if takeStatus}
+          <p class="mt-2 text-green-400">{takeStatus}</p>
+        {/if}
+        {#if takeError}
+          <p class="mt-2 text-red-400">{takeError}</p>
+        {/if}
       </section>
 
       <section class="mb-6">
@@ -288,7 +429,7 @@
           <button
             class="rounded bg-sky-700 px-3 py-1 hover:bg-sky-600 disabled:opacity-50"
             onclick={useLatestRecording}
-            disabled={clipLoading}
+            disabled={clipLoading || recording}
           >
             Use latest recording
           </button>
@@ -306,7 +447,7 @@
         {#if clip}
           <p class="mt-2 text-sm text-zinc-300" title={clipPath}>
             {fileName(clipPath)} · {clip.width}×{clip.height} ·
-            {formatTime(clip.duration)}
+            {formatTime(clip.duration)} · FL started at {clip.offset.toFixed(3)} s
           </p>
         {/if}
         {#if clipError}
@@ -314,49 +455,25 @@
         {/if}
       </section>
 
-      <div class="mb-4 flex gap-2">
-        <input
-          class="rounded bg-zinc-800 px-2 py-1"
-          placeholder="Title contains (empty = all)"
-          bind:value={titleFilter}
-        />
-        <button
-          class="rounded bg-sky-600 px-3 py-1 hover:bg-sky-500 disabled:opacity-50"
-          onclick={listWindows}
-          disabled={recording}
-        >
-          List windows
-        </button>
-      </div>
-
-      {#if recording}
-        <p class="mb-4 text-amber-400">Recording…</p>
-      {/if}
-
-      {#if savedPath}
-        <p class="mb-4 text-green-400">Saved: {savedPath}</p>
-      {/if}
-
-      {#if error}
-        <p class="mb-4 text-red-400">{error}</p>
-      {/if}
-
-      <ul class="space-y-1 font-mono text-sm">
-        {#each windows as w (w.id)}
-          <li class={w.is_fl ? 'rounded bg-sky-900 px-2 py-1' : 'px-2 py-1'}>
-            {w.app_name} | {w.title} | {w.width}x{w.height} | id {w.id}
-            {#if !w.on_screen}(off screen){/if}
-            {#if w.is_fl}<span class="text-sky-300">FL</span>{/if}
-            <button
-              class="ml-2 rounded bg-red-700 px-2 hover:bg-red-600 disabled:opacity-50"
-              onclick={() => recordWindow(w.id)}
-              disabled={recording}
-            >
-              Record 10 s
-            </button>
-          </li>
-        {/each}
-      </ul>
+      <details class="mb-6 text-sm">
+        <summary class="cursor-pointer text-zinc-400">Debug</summary>
+        <div class="mt-2 flex items-center gap-2">
+          <span>FL Studio:</span>
+          <button
+            class="rounded bg-green-700 px-3 py-1 hover:bg-green-600"
+            onclick={() => sendToFl('fl_play', 'play')}
+          >
+            Play
+          </button>
+          <button
+            class="rounded bg-zinc-700 px-3 py-1 hover:bg-zinc-600"
+            onclick={() => sendToFl('fl_stop', 'stop')}
+          >
+            Stop
+          </button>
+          <span class="text-zinc-400">{flStatus}</span>
+        </div>
+      </details>
     </div>
 
     <!-- sticky: the preview stays in view when the left column scrolls -->
