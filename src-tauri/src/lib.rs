@@ -1,7 +1,52 @@
+mod fl_midi;
 mod recorder;
 mod window_list;
 
-use tauri::Manager; // gives `app.path()`
+use std::sync::Mutex;
+
+use midir::MidiOutputConnection;
+use tauri::Manager; // gives `app.path()` and `app.manage()`
+
+// The MIDI connection to FL, kept in Tauri "managed state".
+//
+// `app.manage(value)` hands one value to Tauri, which keeps it alive until
+// the app quits. Any command can then ask for it by adding a
+// `tauri::State<'_, FlPort>` argument; Tauri fills it in (you don't pass it
+// from JavaScript). State is looked up by type, hence the small wrapper type.
+//
+// - Mutex: commands can run on different threads, and sending MIDI needs
+//   `&mut`, so only one command may use the connection at a time.
+// - Result: holds the error text if creating the port failed at startup,
+//   so the commands can show the reason instead of a vague message.
+struct FlPort(Mutex<Result<MidiOutputConnection, String>>);
+
+// Sends one FL command (play or stop) through the shared port.
+fn send_to_fl(
+    port: &FlPort,
+    send: fn(&mut MidiOutputConnection) -> Result<(), String>,
+) -> Result<(), String> {
+    // lock() only fails if another thread panicked while holding the lock.
+    let mut guard = port
+        .0
+        .lock()
+        .map_err(|_| "MIDI port is unusable after an earlier crash.".to_string())?;
+    match guard.as_mut() {
+        Ok(conn) => send(conn),
+        Err(startup_error) => Err(format!("No MIDI port: {startup_error}")),
+    }
+}
+
+// Not `async`, so Tauri runs these on the main thread. That's fine here:
+// sending a few bytes of MIDI takes microseconds and won't freeze the UI.
+#[tauri::command]
+fn fl_play(port: tauri::State<'_, FlPort>) -> Result<(), String> {
+    send_to_fl(&port, fl_midi::send_play)
+}
+
+#[tauri::command]
+fn fl_stop(port: tauri::State<'_, FlPort>) -> Result<(), String> {
+    send_to_fl(&port, fl_midi::send_stop)
+}
 
 // `async` makes Tauri run this on a background thread instead of the main
 // thread, so the UI doesn't freeze while macOS collects the window list.
@@ -51,9 +96,25 @@ pub fn run() {
                         .build(),
                 )?;
             }
+
+            // Create the virtual MIDI port once, for the whole app run: FL
+            // only sees the port while it exists. If it fails we keep the app
+            // running; fl_play / fl_stop will then return this error.
+            let port = fl_midi::create_port(fl_midi::PORT_NAME);
+            match &port {
+                Ok(_) => log::info!("Created MIDI port \"{}\"", fl_midi::PORT_NAME),
+                Err(e) => log::error!("{e}"),
+            }
+            app.manage(FlPort(Mutex::new(port)));
+
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_windows, record_window])
+        .invoke_handler(tauri::generate_handler![
+            list_windows,
+            record_window,
+            fl_play,
+            fl_stop
+        ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
 }

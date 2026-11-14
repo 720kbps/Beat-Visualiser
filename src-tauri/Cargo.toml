@@ -23,6 +23,10 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.12.5", features = [] }
 tauri-plugin-log = "2"
+# MIDI out to FL Studio. In normal deps because midir builds on macOS and
+# Windows (CoreMIDI / WinMM); only its virtual-port feature is macOS-only,
+# and that part is gated with #[cfg] in fl_midi.rs.
+midir = "0.11.1"
 
 # macOS only: ScreenCaptureKit (list and later capture windows) and
 # CoreGraphics (check the Screen Recording permission). The macos_15_0

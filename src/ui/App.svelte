@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Phase 1 spike: list open windows and record one. Throwaway UI.
+  // Phase 1 spike: play/stop FL, list open windows and record one. Throwaway UI.
   import { invoke } from '@tauri-apps/api/core'
 
   // Matches the Rust `WindowInfo` struct (fields stay snake_case).
@@ -20,6 +20,18 @@
   let error = $state('')
   let recording = $state(false)
   let savedPath = $state('')
+
+  // Last FL command result, e.g. "Sent play" or the error from Rust.
+  let flStatus = $state('')
+
+  async function sendToFl(command: 'fl_play' | 'fl_stop', label: string) {
+    try {
+      await invoke(command)
+      flStatus = `Sent ${label}`
+    } catch (e) {
+      flStatus = String(e)
+    }
+  }
 
   async function listWindows() {
     error = ''
@@ -52,6 +64,25 @@
 
 <main class="min-h-screen bg-zinc-900 p-6 text-zinc-200">
   <h1 class="mb-4 text-2xl font-bold text-sky-400">Beat Visualiser</h1>
+
+  <section class="mb-6">
+    <h2 class="mb-2 font-semibold">FL Studio</h2>
+    <div class="flex items-center gap-2">
+      <button
+        class="rounded bg-green-700 px-3 py-1 hover:bg-green-600"
+        onclick={() => sendToFl('fl_play', 'play')}
+      >
+        Play
+      </button>
+      <button
+        class="rounded bg-zinc-700 px-3 py-1 hover:bg-zinc-600"
+        onclick={() => sendToFl('fl_stop', 'stop')}
+      >
+        Stop
+      </button>
+      <span class="text-sm text-zinc-400">{flStatus}</span>
+    </div>
+  </section>
 
   <div class="mb-4 flex gap-2">
     <input
