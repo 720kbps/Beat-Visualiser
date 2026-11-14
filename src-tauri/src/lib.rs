@@ -1,3 +1,4 @@
+mod audio_file;
 mod fl_midi;
 mod recorder;
 mod window_list;
@@ -113,7 +114,8 @@ pub fn run() {
             list_windows,
             record_window,
             fl_play,
-            fl_stop
+            fl_stop,
+            audio_file::read_audio_file
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");
