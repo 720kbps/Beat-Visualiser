@@ -20,6 +20,7 @@
   import { defaultParams } from '../engine/visualizers/params'
   import type { Visualizer } from '../engine/visualizers/types'
   import { loadPluginClip, type PluginClip } from '../engine/video/plugin-clip'
+  import { syncTakeToBeat } from '../engine/sync/sync-take'
   import { exportVideo, isAbortError } from '../engine/export/export-video'
   import { EXPORT_FPS_OPTIONS, type ExportFps } from '../engine/export/timing'
 
@@ -37,7 +38,8 @@
   // Matches the Rust `Take` struct (take.rs).
   type Take = {
     path: string
-    play_offset: number // video seconds at which FL started playing
+    play_offset: number // video seconds at which we sent "play" to FL
+    has_audio: boolean // the take recorded audible sound (needed for audio sync)
   }
 
   // The dropped beat. `$state.raw` instead of `$state`: plain `$state` wraps
@@ -107,23 +109,103 @@
   let clipPath = $state('') // file of `clip`, shown in the UI
   let clipLoading = $state(false)
   let clipError = $state('')
+  // One line about the audio sync of `clip`, e.g. "Synced to audio: …".
+  let syncStatus = $state('')
+  let syncOk = $state(false) // true: the offset comes from the audio
   // Counts load requests, so a slow load that finishes after a newer one
   // (or after Clear) is thrown away. Plain variable: never shown.
   let clipRequest = 0
 
+  type SyncRequest = {
+    searchSeconds: number // how far FL's real start may be from the estimate
+    hasAudio: boolean // false: the take is silent, don't even try
+  }
+
+  // Finds when FL really started, from the take's recorded sound (see
+  // engine/sync/align.ts). Falls back to `estimate` (the play_offset) when
+  // that's not possible. Returns the offset and the status line to show.
+  async function syncOffset(
+    path: string,
+    estimate: number,
+    request: SyncRequest,
+  ): Promise<{ offset: number; ok: boolean; message: string }> {
+    const fallback = `using timing estimate (${estimate.toFixed(3)} s)`
+    if (!decoded) {
+      return {
+        offset: estimate,
+        ok: false,
+        message: `No beat loaded — ${fallback}`,
+      }
+    }
+    if (!request.hasAudio) {
+      return {
+        offset: estimate,
+        ok: false,
+        message: `No sound in the recording — ${fallback}`,
+      }
+    }
+    try {
+      const result = await syncTakeToBeat(
+        convertFileSrc(path),
+        decoded.buffer,
+        SECTION_START,
+        estimate,
+        request.searchSeconds,
+      )
+      if (!result) {
+        return {
+          offset: estimate,
+          ok: false,
+          message: `No audio track in the recording — ${fallback}`,
+        }
+      }
+      if (!result.ok) {
+        return {
+          offset: estimate,
+          ok: false,
+          message: `Audio sync failed (confidence ${result.confidence.toFixed(2)}) — ${fallback}`,
+        }
+      }
+      const ms = Math.round(result.correction * 1000)
+      return {
+        offset: result.offset,
+        ok: true,
+        message:
+          `Synced to audio: FL started at ${result.offset.toFixed(3)} s ` +
+          `(${ms >= 0 ? '+' : ''}${ms} ms, confidence ${result.confidence.toFixed(2)})`,
+      }
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e)
+      return {
+        offset: estimate,
+        ok: false,
+        message: `Audio sync failed: ${reason} — ${fallback}`,
+      }
+    }
+  }
+
   // Loads a recording by its file path and makes it the current clip.
   // `offset`: where beat time 0 is in the video (a take's play_offset).
+  // With `sync`, that offset is first refined from the recorded sound.
   // Returns true if this clip is now shown.
-  async function loadClip(path: string, offset = 0): Promise<boolean> {
+  async function loadClip(
+    path: string,
+    offset = 0,
+    sync: SyncRequest | null = null,
+  ): Promise<boolean> {
     const request = ++clipRequest
     clipError = ''
     clipLoading = true
     try {
+      const synced = sync ? await syncOffset(path, offset, sync) : null
       // convertFileSrc turns the path into an asset:// URL that Tauri serves
       // from disk (allowed folder: assetProtocol.scope in tauri.conf.json).
       // It streams with HTTP range requests, so big files aren't read into
       // memory, and its CORS headers keep the video usable as a WebGL texture.
-      const next = await loadPluginClip(convertFileSrc(path), offset)
+      const next = await loadPluginClip(
+        convertFileSrc(path),
+        synced ? synced.offset : offset,
+      )
       if (request !== clipRequest) {
         next.dispose() // a newer request or Clear came in meanwhile
         return false
@@ -131,6 +213,8 @@
       clip?.dispose()
       clip = next
       clipPath = path
+      syncStatus = synced ? synced.message : ''
+      syncOk = synced ? synced.ok : false
       return true
     } catch (e) {
       if (request === clipRequest) {
@@ -147,7 +231,9 @@
     try {
       const path = await invoke<string | null>('latest_recording')
       if (path) {
-        await loadClip(path) // offset 0: we don't know when FL started
+        // We don't know when FL started (estimate 0), so the audio sync
+        // searches wider: ±2 s.
+        await loadClip(path, 0, { searchSeconds: 2, hasAudio: true })
       } else {
         clipError = 'No recordings yet. Record a window first.'
       }
@@ -162,6 +248,7 @@
     clip = null
     clipPath = ''
     clipError = ''
+    syncStatus = ''
     clipLoading = false
   }
 
@@ -270,7 +357,10 @@
         windowId: selectedWindowId,
         seconds,
       })
-      if (await loadClip(take.path, take.play_offset)) {
+      // FL starts a little after we send play; the audio sync finds the
+      // exact moment, within ±0.5 s of play_offset.
+      const sync = { searchSeconds: 0.5, hasAudio: take.has_audio }
+      if (await loadClip(take.path, take.play_offset, sync)) {
         // Back to the start, so Play shows the take from its first beat.
         player?.seek(0)
         takeStatus = 'Done — press Play to preview'
@@ -540,13 +630,25 @@
           </button>
         </div>
         {#if clipLoading}
-          <p class="mt-2 text-sm text-zinc-400">Loading recording…</p>
+          <p class="mt-2 text-sm text-zinc-400">
+            Syncing to audio and loading the recording…
+          </p>
         {/if}
         {#if clip}
           <p class="mt-2 text-sm text-zinc-300" title={clipPath}>
             {fileName(clipPath)} · {clip.width}×{clip.height} ·
             {formatTime(clip.duration)} · FL started at {clip.offset.toFixed(3)} s
           </p>
+          {#if syncStatus}
+            <p
+              class={[
+                'mt-1 text-sm',
+                syncOk ? 'text-green-400' : 'text-amber-400',
+              ]}
+            >
+              {syncStatus}
+            </p>
+          {/if}
         {/if}
         {#if clipError}
           <p class="mt-2 text-sm text-red-400">{clipError}</p>
