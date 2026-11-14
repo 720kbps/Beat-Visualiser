@@ -21,7 +21,10 @@ tauri-build = { version = "2.7.4", features = [] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.12.5", features = [] }
+# protocol-asset: lets the webview load recordings by file path through the
+# `asset://` protocol (convertFileSrc in JS). Must match
+# app.security.assetProtocol.enable in tauri.conf.json; tauri-build checks that.
+tauri = { version = "2.12.5", features = ["protocol-asset"] }
 tauri-plugin-log = "2"
 # MIDI out to FL Studio. In normal deps because midir builds on macOS and
 # Windows (CoreMIDI / WinMM); only its virtual-port feature is macOS-only,

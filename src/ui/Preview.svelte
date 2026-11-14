@@ -13,6 +13,7 @@
     type RenderContext,
   } from '../engine/render/renderer'
   import { PEAK_COLUMNS, type FrameSource } from '../engine/frame/frame-data'
+  import type { PluginClip } from '../engine/video/plugin-clip'
   import type {
     FrameData,
     ParamValues,
@@ -24,11 +25,15 @@
     params,
     frameSource,
     getTime,
+    isPlaying,
+    clip,
   }: {
     visualizer: Visualizer
     params: ParamValues
     frameSource: FrameSource | null // null = no beat loaded
     getTime: () => number // playback position in seconds, read every frame
+    isPlaying: () => boolean // is the beat playing? read every frame
+    clip: PluginClip | null // the recorded plugin window, null = none
   } = $props()
 
   // What we draw while no beat is loaded: silence at time 0, flat waveform.
@@ -67,7 +72,12 @@
   // data (time, levels, playhead) never goes into Svelte state.
   function drawFrame() {
     if (!active) return
-    const frame = frameSource ? frameSource.getFrame(getTime()) : idleFrame
+    const time = getTime()
+    const frame = frameSource ? frameSource.getFrame(time) : idleFrame
+    // The plugin video follows the beat's clock (play/pause/seek), then the
+    // theme draws whatever frame the video is on.
+    if (clip) clip.sync(time, isPlaying())
+    frame.plugin = clip ? clip.video : undefined
     active.render(frame, params)
   }
 

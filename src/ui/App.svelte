@@ -1,6 +1,6 @@
 <script lang="ts">
   // Phase 1 spike: play/stop FL, list open windows and record one. Throwaway UI.
-  import { invoke } from '@tauri-apps/api/core'
+  import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import DropZone from './DropZone.svelte'
   import Waveform from './Waveform.svelte'
   import Preview from './Preview.svelte'
@@ -16,6 +16,7 @@
   import { getVisualizer, visualizers } from '../engine/visualizers'
   import { defaultParams } from '../engine/visualizers/params'
   import type { Visualizer } from '../engine/visualizers/types'
+  import { loadPluginClip, type PluginClip } from '../engine/video/plugin-clip'
 
   // Matches the Rust `WindowInfo` struct (fields stay snake_case).
   type WindowInfo = {
@@ -91,6 +92,75 @@
     return player ? player.getTime() : 0
   }
 
+  function isBeatPlaying(): boolean {
+    return player ? player.isPlaying() : false
+  }
+
+  // The recorded plugin window shown on the device screen. $state.raw: it
+  // holds a <video> element, which must not be wrapped in a proxy.
+  let clip = $state.raw<PluginClip | null>(null)
+  let clipPath = $state('') // file of `clip`, shown in the UI
+  let clipLoading = $state(false)
+  let clipError = $state('')
+  // Counts load requests, so a slow load that finishes after a newer one
+  // (or after Clear) is thrown away. Plain variable: never shown.
+  let clipRequest = 0
+
+  // Loads a recording by its file path and makes it the current clip.
+  async function loadClip(path: string) {
+    const request = ++clipRequest
+    clipError = ''
+    clipLoading = true
+    try {
+      // convertFileSrc turns the path into an asset:// URL that Tauri serves
+      // from disk (allowed folder: assetProtocol.scope in tauri.conf.json).
+      // It streams with HTTP range requests, so big files aren't read into
+      // memory, and its CORS headers keep the video usable as a WebGL texture.
+      const next = await loadPluginClip(convertFileSrc(path))
+      if (request !== clipRequest) {
+        next.dispose() // a newer request or Clear came in meanwhile
+        return
+      }
+      clip?.dispose()
+      clip = next
+      clipPath = path
+    } catch (e) {
+      if (request === clipRequest) {
+        clipError = e instanceof Error ? e.message : String(e)
+      }
+    } finally {
+      if (request === clipRequest) clipLoading = false
+    }
+  }
+
+  async function useLatestRecording() {
+    clipError = ''
+    try {
+      const path = await invoke<string | null>('latest_recording')
+      if (path) {
+        await loadClip(path)
+      } else {
+        clipError = 'No recordings yet. Record a window first.'
+      }
+    } catch (e) {
+      clipError = String(e)
+    }
+  }
+
+  function clearClip() {
+    clipRequest++ // cancels a load that's still running
+    clip?.dispose()
+    clip = null
+    clipPath = ''
+    clipError = ''
+    clipLoading = false
+  }
+
+  // "spike-1794617731.mov" from the full path (/ on macOS, \ on Windows).
+  function fileName(path: string): string {
+    return path.split(/[\\/]/).pop() ?? path
+  }
+
   // The selected theme. $state.raw: a theme object holds GPU state and must
   // not be wrapped in a proxy. The first registered theme is the default.
   let theme = $state.raw<Visualizer>(visualizers[0])
@@ -153,6 +223,8 @@
     } finally {
       recording = false
     }
+    // Show the new recording on the device screen right away.
+    if (savedPath) await loadClip(savedPath)
   }
 </script>
 
@@ -208,6 +280,38 @@
           </button>
           <span class="text-sm text-zinc-400">{flStatus}</span>
         </div>
+      </section>
+
+      <section class="mb-6">
+        <h2 class="mb-2 font-semibold">Plugin recording</h2>
+        <div class="flex items-center gap-2">
+          <button
+            class="rounded bg-sky-700 px-3 py-1 hover:bg-sky-600 disabled:opacity-50"
+            onclick={useLatestRecording}
+            disabled={clipLoading}
+          >
+            Use latest recording
+          </button>
+          <button
+            class="rounded bg-zinc-700 px-3 py-1 hover:bg-zinc-600 disabled:opacity-50"
+            onclick={clearClip}
+            disabled={!clip && !clipLoading}
+          >
+            Clear
+          </button>
+        </div>
+        {#if clipLoading}
+          <p class="mt-2 text-sm text-zinc-400">Loading recording…</p>
+        {/if}
+        {#if clip}
+          <p class="mt-2 text-sm text-zinc-300" title={clipPath}>
+            {fileName(clipPath)} · {clip.width}×{clip.height} ·
+            {formatTime(clip.duration)}
+          </p>
+        {/if}
+        {#if clipError}
+          <p class="mt-2 text-sm text-red-400">{clipError}</p>
+        {/if}
       </section>
 
       <div class="mb-4 flex gap-2">
@@ -275,6 +379,8 @@
           {params}
           {frameSource}
           getTime={getPlaybackTime}
+          isPlaying={isBeatPlaying}
+          {clip}
         />
         {#if theme.params.length > 0}
           <div class="w-64">

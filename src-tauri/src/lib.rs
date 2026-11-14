@@ -1,6 +1,7 @@
 mod audio_file;
 mod fl_midi;
 mod recorder;
+mod recordings;
 mod window_list;
 
 use std::sync::Mutex;
@@ -72,18 +73,35 @@ async fn record_window(
         return Err(format!("Length must be 1 to 60 seconds, got {seconds}."));
     }
 
-    // ~/Movies/Beat Visualiser on macOS.
-    let folder = app
-        .path()
-        .video_dir()
-        .map_err(|e| format!("Could not find the Movies folder: {e}"))?
-        .join("Beat Visualiser");
+    let folder = recordings_folder(&app)?;
 
     tauri::async_runtime::spawn_blocking(move || {
         recorder::record_window(window_id, seconds, &folder)
     })
     .await
     .map_err(|e| format!("Recording thread crashed: {e}"))?
+}
+
+// Where recordings are saved: ~/Movies/Beat Visualiser on macOS,
+// %USERPROFILE%\Videos\Beat Visualiser on Windows. The asset protocol scope in
+// tauri.conf.json (`$VIDEO/Beat Visualiser/**`) allows the webview to load
+// files from exactly this folder, so the two must stay the same.
+fn recordings_folder(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let videos = app
+        .path()
+        .video_dir()
+        .map_err(|e| format!("Could not find the Movies folder: {e}"))?;
+    Ok(videos.join(recordings::FOLDER_NAME))
+}
+
+// The newest recording's full path, or None (null in JS) if there is none.
+// `async` so the folder scan runs off the main thread.
+#[tauri::command]
+async fn latest_recording(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let folder = recordings_folder(&app)?;
+    let newest = recordings::newest_mov(&folder)?;
+    // to_string_lossy: paths aren't guaranteed to be valid UTF-8, JS strings are.
+    Ok(newest.map(|path| path.to_string_lossy().into_owned()))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -113,6 +131,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_windows,
             record_window,
+            latest_recording,
             fl_play,
             fl_stop,
             audio_file::read_audio_file
