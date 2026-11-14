@@ -9,6 +9,9 @@
 #   note 61 (note-on, velocity > 0)  ->  stop
 #   note 63 (note-on, velocity > 0)  ->  rewind to the song start
 #
+# Play and rewind first switch FL to song mode if it is in pattern mode,
+# so a take always plays the song, never just the selected pattern.
+#
 # Everything is on MIDI channel 1. See fl-script/README.md for the protocol
 # and how to install the script.
 #
@@ -25,11 +28,24 @@ NOTE_STOP = 61
 # NOTE_PING = 62 is reserved for a future "Test connection" message.
 NOTE_REWIND = 63
 
+# Values returned by transport.getLoopMode().
+LOOP_MODE_PATTERN = 0
+LOOP_MODE_SONG = 1
+
 
 def OnInit():
     # Called when FL loads the script (FL start, choosing the script in
     # MIDI settings, or "Reload script").
     print('Beat Visualiser script loaded')
+
+
+def ensure_song_mode():
+    # transport.setLoopMode() takes no argument: it toggles between pattern
+    # and song. So only call it when FL is in pattern mode, otherwise we
+    # would switch song mode off again.
+    if transport.getLoopMode() == LOOP_MODE_PATTERN:
+        transport.setLoopMode()
+        print('Beat Visualiser: switched to song mode')
 
 
 def OnMidiMsg(event):
@@ -60,16 +76,22 @@ def OnMidiMsg(event):
     if note == NOTE_PLAY:
         # transport.start() is play/pause: it toggles. Calling it while FL
         # is already playing would pause, so only call it when stopped.
-        # TODO: in pattern mode this plays the pattern, not the song (Phase 5).
         if not transport.isPlaying():
+            # Safety net: the app sends rewind before play, which already
+            # switches to song mode. Only done while stopped, so we never
+            # change the mode in the middle of playback.
+            ensure_song_mode()
             transport.start()
         print('Beat Visualiser: play')
     elif note == NOTE_STOP:
         transport.stop()
         print('Beat Visualiser: stop')
     elif note == NOTE_REWIND:
+        # Switch to song mode first. FL keeps a separate position for
+        # pattern and song mode, so setSongPos must run after the switch,
+        # or it would rewind the pattern instead of the song.
+        ensure_song_mode()
         # Without a mode argument, setSongPos takes a fraction of the song
         # length (0.0 = start, 1.0 = end) and needs a float, hence 0.0.
-        # In pattern mode this moves the pattern position instead.
         transport.setSongPos(0.0)
         print('Beat Visualiser: rewind')
