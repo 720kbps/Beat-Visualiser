@@ -11,7 +11,13 @@
   import { getCurrentWebview } from '@tauri-apps/api/webview'
   import type { BeatFile } from './beat-file'
 
-  let { onfile }: { onfile: (file: BeatFile) => void } = $props()
+  let {
+    onfile,
+    disabled = false,
+  }: {
+    onfile: (file: BeatFile) => void
+    disabled?: boolean // true = drops are ignored (e.g. while exporting)
+  } = $props()
 
   let hovering = $state(false) // a file is being dragged over the window
   let loading = $state(false)
@@ -29,7 +35,7 @@
 
   async function loadFirstSupported(paths: string[]) {
     // Ignore drops while the previous file is still being read.
-    if (loading) return
+    if (loading || disabled) return
 
     // Several files dropped: take the first WAV/MP3.
     const path = paths.find(isSupported)
@@ -59,7 +65,7 @@
     const unlistenPromise = getCurrentWebview().onDragDropEvent((event) => {
       const drag = event.payload
       if (drag.type === 'enter' || drag.type === 'over') {
-        hovering = true
+        hovering = !disabled
       } else if (drag.type === 'leave') {
         hovering = false
       } else if (drag.type === 'drop') {
@@ -82,6 +88,7 @@
     hovering
       ? 'border-sky-400 bg-sky-950 text-sky-300'
       : 'border-zinc-600 bg-zinc-800 text-zinc-400',
+    disabled && 'opacity-50',
   ]}
 >
   {#if loading}

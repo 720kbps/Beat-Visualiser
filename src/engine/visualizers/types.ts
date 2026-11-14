@@ -25,7 +25,10 @@ export type ParamSchema = ParamDef[]
 // Current value of every param, by id. Built with defaultParams(schema).
 export type ParamValues = Record<string, number | string | boolean>
 
-export type VideoFrameSource = HTMLVideoElement // the recorded plugin clip (wired up later in Phase 3)
+// The recorded plugin clip as the theme gets it:
+// - preview: the <video> element (video/plugin-clip.ts), already on the right frame
+// - export: a canvas the exporter draws each decoded frame into (export/plugin-frames.ts)
+export type VideoFrameSource = HTMLVideoElement | HTMLCanvasElement
 
 // Everything a theme needs to draw one frame. Computed from the time only (see
 // frame/frame-data.ts), never from the live audio clock, so export is deterministic.

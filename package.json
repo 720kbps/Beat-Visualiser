@@ -38,6 +38,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",
+    "mediabunny": "1.65.0",
     "three": "^0.187.0"
   }
 }

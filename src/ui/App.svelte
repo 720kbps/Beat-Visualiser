@@ -2,6 +2,7 @@
   // One-button flow: drop the beat, pick the plugin window, pick a length,
   // press "Play & record". FL plays from the song start while the app records
   // the window; the recording then shows in the preview, lined up with the beat.
+  // "Export MP4" then renders that section into a 1080×1920 video.
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import DropZone from './DropZone.svelte'
   import Waveform from './Waveform.svelte'
@@ -19,6 +20,8 @@
   import { defaultParams } from '../engine/visualizers/params'
   import type { Visualizer } from '../engine/visualizers/types'
   import { loadPluginClip, type PluginClip } from '../engine/video/plugin-clip'
+  import { exportVideo, isAbortError } from '../engine/export/export-video'
+  import { EXPORT_FPS_OPTIONS, type ExportFps } from '../engine/export/timing'
 
   // Matches the Rust `WindowInfo` struct (fields stay snake_case).
   type WindowInfo = {
@@ -56,15 +59,10 @@
   // $state.raw: replaced as a whole, never changed field by field.
   let player = $state.raw<Player | null>(null)
 
-  // Per-frame values (levels, peaks, progress) for the themes, computed once
-  // from the decoded samples. Covers the whole beat for now; Phase 4 picks a section.
-  let frameSource = $state.raw<FrameSource | null>(null)
-
-  // Stops playback and drops the old beat's player and frame source.
+  // Stops playback and drops the old beat's player.
   function clearPlayback() {
     player?.dispose()
     player = null
-    frameSource = null
   }
 
   async function onBeatFile(file: BeatFile) {
@@ -81,8 +79,6 @@
       if (beat === file) {
         decoded = result
         player = createPlayer(result.buffer)
-        // One pass over the samples (~50 ms per minute of audio), then lookups.
-        frameSource = createFrameSource(result.buffer)
       }
     } catch (e) {
       if (beat === file) {
@@ -94,7 +90,8 @@
   }
 
   // The preview's playback clock. The player's time is seconds into the
-  // buffer, and the frame source covers the whole buffer, so they line up.
+  // buffer; the frame source's clip starts at second 0 of the buffer
+  // (SECTION_START), so they line up.
   // Called by the preview's frame loop; reading `player` there is a plain read.
   function getPlaybackTime(): number {
     return player ? player.getTime() : 0
@@ -221,7 +218,26 @@
       : length,
   )
 
+  // The clip that is recorded, previewed and exported: from the beat's start,
+  // takeSeconds long. Phase 4 (highlight detection) will move the start.
+  const SECTION_START = 0
+
+  // Per-frame values (levels, peaks, progress) for the themes, for exactly
+  // that section, so the preview's waveform and playhead match the export.
+  // One pass over the samples (~50 ms per minute of audio), then lookups;
+  // recomputed when the beat or the length changes.
+  let frameSource = $derived<FrameSource | null>(
+    decoded
+      ? createFrameSource(
+          decoded.buffer,
+          SECTION_START,
+          SECTION_START + takeSeconds,
+        )
+      : null,
+  )
+
   let recording = $state(false)
+  let exporting = $state(false) // true while "Export MP4" runs (step 4)
   // Whole seconds since "Play & record" was pressed. Only a UI counter,
   // updated 4 times a second; not render-loop data.
   let recordingElapsed = $state(0)
@@ -229,7 +245,7 @@
   let takeError = $state('')
 
   let canRecord = $derived(
-    decoded !== null && selectedWindowId !== null && !recording,
+    decoded !== null && selectedWindowId !== null && !recording && !exporting,
   )
 
   // The one button: FL plays from the start while Rust records the window,
@@ -267,6 +283,88 @@
     }
   }
 
+  // --- Export ---
+
+  // The preview component, for withRenderer(). Set by bind:this.
+  let preview = $state.raw<ReturnType<typeof Preview>>()
+
+  let exportFps = $state<ExportFps>(30)
+  // UI values, updated at most ~10×/s (not per frame).
+  let exportProgress = $state(0) // 0..1
+  let exportElapsed = $state(0) // whole seconds
+  let exportError = $state('')
+  let exportedPath = $state('') // the saved MP4, '' = none yet
+  // Aborts the running export (Cancel). Plain variable: never shown.
+  let exportAbort: AbortController | null = null
+
+  let canExport = $derived(
+    decoded !== null && frameSource !== null && !recording && !exporting,
+  )
+
+  async function startExport() {
+    if (!decoded || !frameSource || !preview) return
+    player?.pause() // the preview loop stops anyway; don't play audio meanwhile
+
+    exporting = true
+    exportProgress = 0
+    exportElapsed = 0
+    exportError = ''
+    exportedPath = ''
+    const abort = new AbortController()
+    exportAbort = abort
+    const startedAt = performance.now()
+    const timer = setInterval(() => {
+      exportElapsed = Math.floor((performance.now() - startedAt) / 1000)
+    }, 250)
+
+    // Copies taken now, so changes during the export can't affect it.
+    const options = {
+      // $state.snapshot: a plain object instead of the reactive proxy
+      params: $state.snapshot(params),
+      frameSource,
+      audio: decoded.buffer,
+      sectionStart: SECTION_START,
+      length: takeSeconds,
+      fps: exportFps,
+      plugin: clip
+        ? { url: convertFileSrc(clipPath), offset: clip.offset }
+        : null,
+    }
+
+    try {
+      const bytes = await preview.withRenderer((ctx, visualizer) =>
+        exportVideo(
+          { ...options, ctx, visualizer },
+          (p) => (exportProgress = p),
+          abort.signal,
+        ),
+      )
+      // A Uint8Array as the whole argument: Tauri sends it as the raw
+      // request body (binary), not as JSON. Rust writes it to disk.
+      exportedPath = await invoke<string>('save_export', bytes)
+    } catch (e) {
+      if (!isAbortError(e)) {
+        exportError = e instanceof Error ? e.message : String(e)
+      }
+    } finally {
+      clearInterval(timer)
+      exportAbort = null
+      exporting = false
+    }
+  }
+
+  function cancelExport() {
+    exportAbort?.abort()
+  }
+
+  async function showInFolder() {
+    try {
+      await invoke('show_in_folder', { path: exportedPath })
+    } catch (e) {
+      exportError = String(e)
+    }
+  }
+
   // Debug: last FL command result, e.g. "Sent play" or the error from Rust.
   let flStatus = $state('')
 
@@ -292,7 +390,7 @@
     <div>
       <section class="mb-6">
         <h2 class="mb-2 font-semibold">1. Beat</h2>
-        <DropZone onfile={onBeatFile} />
+        <DropZone onfile={onBeatFile} disabled={exporting || recording} />
         {#if beat}
           <p class="mt-2 text-sm text-zinc-300">
             {beat.name} · {(beat.bytes.byteLength / (1024 * 1024)).toFixed(1)} MB
@@ -326,7 +424,7 @@
           <button
             class="rounded bg-sky-600 px-3 py-1 hover:bg-sky-500 disabled:opacity-50"
             onclick={listWindows}
-            disabled={recording}
+            disabled={recording || exporting}
           >
             List windows
           </button>
@@ -379,7 +477,7 @@
                   : 'bg-zinc-700 hover:bg-zinc-600',
               ]}
               onclick={() => (length = seconds)}
-              disabled={recording}
+              disabled={recording || exporting}
             >
               {seconds} s
             </button>
@@ -429,14 +527,14 @@
           <button
             class="rounded bg-sky-700 px-3 py-1 hover:bg-sky-600 disabled:opacity-50"
             onclick={useLatestRecording}
-            disabled={clipLoading || recording}
+            disabled={clipLoading || recording || exporting}
           >
             Use latest recording
           </button>
           <button
             class="rounded bg-zinc-700 px-3 py-1 hover:bg-zinc-600 disabled:opacity-50"
             onclick={clearClip}
-            disabled={!clip && !clipLoading}
+            disabled={(!clip && !clipLoading) || exporting}
           >
             Clear
           </button>
@@ -452,6 +550,68 @@
         {/if}
         {#if clipError}
           <p class="mt-2 text-sm text-red-400">{clipError}</p>
+        {/if}
+      </section>
+
+      <section class="mb-6">
+        <h2 class="mb-2 font-semibold">4. Export</h2>
+        <div class="flex items-center gap-2">
+          {#each EXPORT_FPS_OPTIONS as fps (fps)}
+            <button
+              class={[
+                'rounded px-3 py-1 disabled:opacity-50',
+                fps === exportFps
+                  ? 'bg-sky-600 text-white'
+                  : 'bg-zinc-700 hover:bg-zinc-600',
+              ]}
+              onclick={() => (exportFps = fps)}
+              disabled={exporting}
+            >
+              {fps} fps
+            </button>
+          {/each}
+          <button
+            class="rounded-lg bg-sky-600 px-6 py-2 font-bold hover:bg-sky-500 disabled:opacity-50"
+            onclick={startExport}
+            disabled={!canExport}
+          >
+            Export MP4
+          </button>
+        </div>
+        <p class="mt-2 text-sm text-zinc-400">
+          {formatTime(takeSeconds)} from the start of the beat, 1080×1920 H.264 +
+          AAC from the beat file{clip ? ', with the plugin recording' : ''}.
+        </p>
+        {#if exporting}
+          <div class="mt-2 flex items-center gap-3">
+            <progress class="h-2 w-64" max="1" value={exportProgress}
+            ></progress>
+            <span class="text-sm text-zinc-300">
+              {Math.round(exportProgress * 100)}% · {exportElapsed} s
+            </span>
+            <button
+              class="rounded bg-zinc-700 px-3 py-1 text-sm hover:bg-zinc-600"
+              onclick={cancelExport}
+            >
+              Cancel
+            </button>
+          </div>
+        {/if}
+        {#if exportedPath}
+          <div class="mt-2 flex items-center gap-3">
+            <span class="text-green-400" title={exportedPath}>
+              Saved: {fileName(exportedPath)}
+            </span>
+            <button
+              class="rounded bg-zinc-700 px-3 py-1 text-sm hover:bg-zinc-600"
+              onclick={showInFolder}
+            >
+              Show in folder
+            </button>
+          </div>
+        {/if}
+        {#if exportError}
+          <p class="mt-2 text-sm text-red-400">{exportError}</p>
         {/if}
       </section>
 
@@ -481,7 +641,8 @@
       <div class="mb-2 flex items-center gap-3">
         <h2 class="font-semibold">Preview</h2>
         <select
-          class="rounded bg-zinc-800 px-2 py-1 text-sm"
+          class="rounded bg-zinc-800 px-2 py-1 text-sm disabled:opacity-50"
+          disabled={exporting}
           value={theme.id}
           onchange={(e) => selectTheme(e.currentTarget.value)}
         >
@@ -492,6 +653,7 @@
       </div>
       <div class="flex items-start gap-4">
         <Preview
+          bind:this={preview}
           visualizer={theme}
           {params}
           {frameSource}

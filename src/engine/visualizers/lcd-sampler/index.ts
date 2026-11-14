@@ -15,7 +15,13 @@ import {
 } from '../../render/fullscreen-quad'
 import type { RenderContext } from '../../render/renderer'
 import { colorParam, numberParam } from '../params'
-import type { FrameData, ParamSchema, ParamValues, Visualizer } from '../types'
+import type {
+  FrameData,
+  ParamSchema,
+  ParamValues,
+  VideoFrameSource,
+  Visualizer,
+} from '../types'
 import commonGlsl from './common.glsl?raw'
 import hardwareGlsl from './hardware.glsl?raw'
 import mainGlsl from './main.glsl?raw'
@@ -121,8 +127,8 @@ type GpuState = {
   peaksTexture: THREE.DataTexture
   peaks: Float32Array | null // the array currently in peaksTexture
   screenColor: string // the hex currently in uScreenColor
-  pluginVideo: HTMLVideoElement | null // the video currently in pluginTexture
-  pluginTexture: THREE.VideoTexture | null
+  pluginSource: VideoFrameSource | null // the video or canvas currently in pluginTexture
+  pluginTexture: THREE.Texture | null
   pluginUploadedTime: number // video.currentTime of the last uploaded frame
 }
 
@@ -188,36 +194,64 @@ function init(ctx: RenderContext): void {
     peaksTexture,
     peaks: null,
     screenColor: DEFAULT_SCREEN_COLOR,
-    pluginVideo: null,
+    pluginSource: null,
     pluginTexture: null,
     pluginUploadedTime: -1,
   }
 }
 
-// The plugin video as a texture. Linear filtering (the video is shown scaled
-// down a bit), no mipmaps (they'd be rebuilt on every frame). colorSpace stays
-// at the default, so the shader gets the video's own sRGB values (see
-// render/renderer.ts).
-function createPluginTexture(video: HTMLVideoElement): THREE.VideoTexture {
-  const texture = new THREE.VideoTexture(video)
+// The plugin clip as a texture: a VideoTexture for the preview's <video>, a
+// CanvasTexture for the export's canvas. Linear filtering (the clip is shown
+// scaled down a bit), no mipmaps (they'd be rebuilt on every frame).
+// colorSpace stays at the default, so the shader gets the clip's own sRGB
+// values (see render/renderer.ts).
+function createPluginTexture(source: VideoFrameSource): THREE.Texture {
+  const texture =
+    source instanceof HTMLVideoElement
+      ? new THREE.VideoTexture(source)
+      : new THREE.CanvasTexture(source)
   texture.minFilter = THREE.LinearFilter
   texture.magFilter = THREE.LinearFilter
   texture.generateMipmaps = false
   return texture
 }
 
-// Keeps uPlugin in step with frame.plugin: a new texture when the video element
-// changes, and a fresh upload of the current frame when the video moved.
-function updatePluginTexture(state: GpuState, video: HTMLVideoElement | null) {
+// Keeps uPlugin in step with frame.plugin: a new texture when the source
+// (video or canvas) changes, and a fresh upload when its picture changed.
+function updatePluginTexture(state: GpuState, source: VideoFrameSource | null) {
   const u = state.uniforms
 
-  if (video !== state.pluginVideo) {
+  if (source !== state.pluginSource) {
     state.pluginTexture?.dispose()
-    state.pluginTexture = video ? createPluginTexture(video) : null
-    state.pluginVideo = video
+    state.pluginTexture = source ? createPluginTexture(source) : null
+    state.pluginSource = source
     state.pluginUploadedTime = -1
     u.uPlugin.value = state.pluginTexture
   }
+
+  if (source instanceof HTMLCanvasElement) {
+    updateCanvasTexture(state, source)
+  } else {
+    updateVideoTexture(state, source)
+  }
+}
+
+// Export: the exporter drew the right frame into the canvas just before
+// render(), so upload it every frame (one texImage2D of the clip's size).
+function updateCanvasTexture(state: GpuState, canvas: HTMLCanvasElement) {
+  const u = state.uniforms
+  if (!state.pluginTexture || canvas.width === 0 || canvas.height === 0) {
+    u.uHasPlugin.value = 0
+    return
+  }
+  state.pluginTexture.needsUpdate = true
+  u.uPluginSize.value.set(canvas.width, canvas.height)
+  u.uHasPlugin.value = 1
+}
+
+// Preview: the <video> element plays or seeks on its own clock.
+function updateVideoTexture(state: GpuState, video: HTMLVideoElement | null) {
+  const u = state.uniforms
 
   // HAVE_CURRENT_DATA: there is a decoded frame to show.
   const texture = state.pluginTexture
@@ -286,7 +320,7 @@ function dispose(): void {
   if (!gpu) return
   gpu.quad.dispose() // geometry + material
   gpu.peaksTexture.dispose() // the quad doesn't own textures
-  gpu.pluginTexture?.dispose() // the video itself belongs to the caller
+  gpu.pluginTexture?.dispose() // the video/canvas itself belongs to the caller
   gpu = null
 }
 

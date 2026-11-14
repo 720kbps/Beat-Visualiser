@@ -63,6 +63,30 @@
   let shownWidth = $state(0)
   let scalePercent = $derived(Math.round((shownWidth / OUTPUT_WIDTH) * 100))
 
+  // Stops the frame loop; null while it isn't running (no context, or
+  // paused for an export). Plain variable: never shown.
+  let stopLoop: (() => void) | null = null
+  let destroyed = false
+
+  // Lends the renderer and the current theme to `work` (the export) and
+  // pauses the preview's own loop meanwhile, so the two never draw into the
+  // canvas at the same time. The theme keeps its GPU state between the two:
+  // each theme exists once (module-level state), so export must use this
+  // instance, not a second one. The loop restarts when `work` is done, also
+  // after an error. Called from App via bind:this.
+  export async function withRenderer<T>(
+    work: (ctx: RenderContext, visualizer: Visualizer) => Promise<T>,
+  ): Promise<T> {
+    if (!ctx || !active) throw new Error('The preview is not ready yet.')
+    stopLoop?.()
+    stopLoop = null
+    try {
+      return await work(ctx, active)
+    } finally {
+      if (!destroyed) stopLoop = startRenderLoop(drawFrame)
+    }
+  }
+
   // Dev aid: shade the TikTok overlay area on top of the canvas.
   let showSafeZone = $state(false)
 
@@ -99,10 +123,12 @@
       return () => observer.disconnect()
     }
     ctx = context
-    const stop = startRenderLoop(drawFrame)
+    stopLoop = startRenderLoop(drawFrame)
 
     return () => {
-      stop()
+      destroyed = true
+      stopLoop?.()
+      stopLoop = null
       observer.disconnect()
       // Free the theme's GPU objects before the context goes away. The effect
       // below also disposes it on removal; dispose() is safe to call twice.

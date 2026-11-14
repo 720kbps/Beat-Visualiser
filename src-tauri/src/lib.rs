@@ -1,4 +1,5 @@
 mod audio_file;
+mod export_file;
 mod fl_midi;
 mod recorder;
 mod recordings;
@@ -79,6 +80,31 @@ async fn latest_recording(app: tauri::AppHandle) -> Result<Option<String>, Strin
     Ok(newest.map(|path| path.to_string_lossy().into_owned()))
 }
 
+// Writes the exported MP4 (the raw request body, see export_file.rs) to
+// ~/Movies/Beat Visualiser/export-<unix time>.mp4 and returns the full path.
+// `async` so writing tens of MB doesn't block the main thread. (An async
+// command that borrows its arguments, like `request` here, must return a
+// Result; Tauri requires that.)
+#[tauri::command]
+async fn save_export(
+    app: tauri::AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<String, String> {
+    let bytes = export_file::raw_body(&request)?;
+    let folder = recordings_folder(&app)?;
+    let path = export_file::save_export(&folder, bytes)?;
+    log::info!("Saved export: {} ({} bytes)", path.display(), bytes.len());
+    Ok(path.to_string_lossy().into_owned())
+}
+
+// Opens Finder / Explorer with the exported file selected. Only for files in
+// the recordings folder.
+#[tauri::command]
+fn show_in_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let folder = recordings_folder(&app)?;
+    export_file::show_in_folder(&folder, std::path::Path::new(&path))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -109,6 +135,8 @@ pub fn run() {
             latest_recording,
             fl_play,
             fl_stop,
+            save_export,
+            show_in_folder,
             audio_file::read_audio_file
         ])
         .run(tauri::generate_context!())
