@@ -26,14 +26,14 @@
     frameSource,
     getTime,
     isPlaying,
-    clip,
+    clips,
   }: {
     visualizer: Visualizer
     params: ParamValues
     frameSource: FrameSource | null // null = no beat loaded
     getTime: () => number // playback position in seconds, read every frame
     isPlaying: () => boolean // is the beat playing? read every frame
-    clip: PluginClip | null // the recorded plugin window, null = none
+    clips: PluginClip[] // the recorded plugin windows, one per slot (top first)
   } = $props()
 
   // What we draw while no beat is loaded: silence at time 0, flat waveform.
@@ -44,6 +44,7 @@
     rms: 0,
     bass: 0,
     beat: false,
+    plugins: [],
   }
 
   // Set by bind:this once the <canvas> exists. Not $state: it never changes.
@@ -98,10 +99,12 @@
     if (!active) return
     const time = getTime()
     const frame = frameSource ? frameSource.getFrame(time) : idleFrame
-    // The plugin video follows the beat's clock (play/pause/seek), then the
-    // theme draws whatever frame the video is on.
-    if (clip) clip.sync(time, isPlaying())
-    frame.plugin = clip ? clip.video : undefined
+    // Each plugin video follows the beat's clock (play/pause/seek), then the
+    // theme draws whatever frame each video is on. Every clip has its own
+    // offset, so they line up with the beat (and each other) separately.
+    const playing = isPlaying()
+    for (const clip of clips) clip.sync(time, playing)
+    frame.plugins = clips.map((clip) => clip.video)
     active.render(frame, params)
   }
 

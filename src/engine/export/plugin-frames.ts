@@ -13,7 +13,7 @@
 // decoded at most once.
 //
 // Each picture is drawn into one canvas, which the theme uploads as a
-// texture (frame.plugin). A VideoFrame holds GPU/decoder memory until it's
+// texture (an entry of frame.plugins). A VideoFrame holds GPU/decoder memory until it's
 // closed, so every sample is closed right after drawing.
 //
 // The recording may have a variable frame rate (ScreenCaptureKit only sends a
@@ -29,7 +29,7 @@ import {
 } from 'mediabunny'
 
 export type PluginFrameReader = {
-  canvas: HTMLCanvasElement // holds the current frame; pass it as frame.plugin
+  canvas: HTMLCanvasElement // holds the current frame; goes into frame.plugins
   width: number // video pixels
   height: number
   next(): Promise<void> // draws the frame for the next export time into `canvas`

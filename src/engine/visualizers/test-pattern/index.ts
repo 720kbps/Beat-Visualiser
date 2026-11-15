@@ -57,6 +57,7 @@ export const testPattern: Visualizer = {
   id: 'test-pattern',
   name: 'Test pattern',
   params: [],
+  pluginSlots: 0,
   init,
   render,
   dispose,

@@ -167,7 +167,7 @@ function init(ctx: RenderContext): void {
     uBass: { value: 0 },
     uPeaks: { value: peaksTexture },
     uPeakColumns: { value: PEAK_COLUMNS },
-    // The recorded plugin clip (frame.plugin), see updatePluginTexture()
+    // The recorded plugin clip (frame.plugins[0]), see updatePluginTexture()
     uPlugin: { value: null },
     uPluginSize: { value: new THREE.Vector2(1, 1) },
     uHasPlugin: { value: 0 },
@@ -216,7 +216,7 @@ function createPluginTexture(source: VideoFrameSource): THREE.Texture {
   return texture
 }
 
-// Keeps uPlugin in step with frame.plugin: a new texture when the source
+// Keeps uPlugin in step with frame.plugins[0]: a new texture when the source
 // (video or canvas) changes, and a fresh upload when its picture changed.
 function updatePluginTexture(state: GpuState, source: VideoFrameSource | null) {
   const u = state.uniforms
@@ -300,7 +300,7 @@ function render(frame: FrameData, values: ParamValues): void {
   u.uRms.value = frame.rms
   u.uBass.value = frame.bass
 
-  updatePluginTexture(gpu, frame.plugin ?? null)
+  updatePluginTexture(gpu, frame.plugins[0] ?? null)
 
   const screenColor = colorParam(values, 'screenColor', DEFAULT_SCREEN_COLOR)
   if (screenColor !== gpu.screenColor) {
@@ -328,6 +328,7 @@ export const lcdSampler: Visualizer = {
   id: 'lcd-sampler',
   name: 'LCD Sampler',
   params,
+  pluginSlots: 1,
   init,
   render,
   dispose,

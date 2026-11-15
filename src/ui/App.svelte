@@ -1,7 +1,7 @@
 <script lang="ts">
-  // One-button flow: drop the beat, pick the plugin window, pick a length,
+  // One-button flow: drop the beat, pick the plugin windows, pick a length,
   // press "Play & record". FL plays from the song start while the app records
-  // the window; the recording then shows in the preview, lined up with the beat.
+  // the windows; the recordings then show in the preview, lined up with the beat.
   // "Export MP4" then renders that section into a 1080×1920 video.
   import { convertFileSrc, invoke } from '@tauri-apps/api/core'
   import DropZone from './DropZone.svelte'
@@ -35,12 +35,15 @@
     is_fl: boolean
   }
 
-  // Matches the Rust `Take` struct (take.rs).
-  type Take = {
+  // Matches the Rust `Take` / `TakeClip` structs (take.rs). One clip per
+  // recorded window, in the same order as the windowIds we sent.
+  type TakeClip = {
+    window_id: number
     path: string
     play_offset: number // video seconds at which we sent "play" to FL
-    has_audio: boolean // the take recorded audible sound (needed for audio sync)
+    has_audio: boolean // the clip recorded audible sound (needed for audio sync)
   }
+  type Take = { clips: TakeClip[] }
 
   // The dropped beat. `$state.raw` instead of `$state`: plain `$state` wraps
   // plain objects in a deep reactive proxy. We never change fields of this
@@ -103,18 +106,32 @@
     return player ? player.isPlaying() : false
   }
 
-  // The recorded plugin window shown on the device screen. $state.raw: it
-  // holds a <video> element, which must not be wrapped in a proxy.
-  let clip = $state.raw<PluginClip | null>(null)
-  let clipPath = $state('') // file of `clip`, shown in the UI
+  // One loaded plugin recording: the clip plus what the UI shows about it.
+  type Recording = {
+    clip: PluginClip
+    path: string // the file, shown in the UI and read again by the export
+    syncStatus: string // one line about its audio sync, '' = not synced
+    syncOk: boolean // true: the offset comes from the audio
+  }
+
+  // The recorded plugin windows, one per slot: recordings[0] is slot 1 (top).
+  // $state.raw: each holds a <video> element, which must not be wrapped in a
+  // proxy. Only ever replaced as a whole array.
+  let recordings = $state.raw<Recording[]>([])
   let clipLoading = $state(false)
   let clipError = $state('')
-  // One line about the audio sync of `clip`, e.g. "Synced to audio: …".
-  let syncStatus = $state('')
-  let syncOk = $state(false) // true: the offset comes from the audio
   // Counts load requests, so a slow load that finishes after a newer one
   // (or after Clear) is thrown away. Plain variable: never shown.
   let clipRequest = 0
+
+  // A file to load into one slot. `offset`: where beat time 0 is in the
+  // video (a take clip's play_offset). With `sync`, that offset is first
+  // refined from the recorded sound.
+  type ClipToLoad = {
+    path: string
+    offset: number
+    sync: SyncRequest | null
+  }
 
   type SyncRequest = {
     searchSeconds: number // how far FL's real start may be from the estimate
@@ -134,14 +151,14 @@
       return {
         offset: estimate,
         ok: false,
-        message: `No beat loaded — ${fallback}`,
+        message: `no beat loaded — ${fallback}`,
       }
     }
     if (!request.hasAudio) {
       return {
         offset: estimate,
         ok: false,
-        message: `No sound in the recording — ${fallback}`,
+        message: `no sound in the recording — ${fallback}`,
       }
     }
     try {
@@ -156,67 +173,71 @@
         return {
           offset: estimate,
           ok: false,
-          message: `No audio track in the recording — ${fallback}`,
+          message: `no audio track in the recording — ${fallback}`,
         }
       }
       if (!result.ok) {
         return {
           offset: estimate,
           ok: false,
-          message: `Audio sync failed (confidence ${result.confidence.toFixed(2)}) — ${fallback}`,
+          message: `audio sync failed (confidence ${result.confidence.toFixed(2)}) — ${fallback}`,
         }
       }
       const ms = Math.round(result.correction * 1000)
       return {
         offset: result.offset,
         ok: true,
-        message:
-          `Synced to audio: FL started at ${result.offset.toFixed(3)} s ` +
-          `(${ms >= 0 ? '+' : ''}${ms} ms, confidence ${result.confidence.toFixed(2)})`,
+        message: `synced ${ms >= 0 ? '+' : ''}${ms} ms (${result.confidence.toFixed(2)})`,
       }
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e)
       return {
         offset: estimate,
         ok: false,
-        message: `Audio sync failed: ${reason} — ${fallback}`,
+        message: `audio sync failed: ${reason} — ${fallback}`,
       }
     }
   }
 
-  // Loads a recording by its file path and makes it the current clip.
-  // `offset`: where beat time 0 is in the video (a take's play_offset).
-  // With `sync`, that offset is first refined from the recorded sound.
-  // Returns true if this clip is now shown.
-  async function loadClip(
-    path: string,
-    offset = 0,
-    sync: SyncRequest | null = null,
-  ): Promise<boolean> {
+  // Loads recordings into the slots, in order (items[0] = slot 1), and
+  // replaces the current ones. Syncs and loads one after the other: simple,
+  // and the audio sync reads a few MB per clip, so it's quick anyway.
+  // If one fails, none are shown. Returns true if the new ones are shown.
+  async function loadRecordings(items: ClipToLoad[]): Promise<boolean> {
     const request = ++clipRequest
     clipError = ''
     clipLoading = true
+    const loaded: Recording[] = []
     try {
-      const synced = sync ? await syncOffset(path, offset, sync) : null
-      // convertFileSrc turns the path into an asset:// URL that Tauri serves
-      // from disk (allowed folder: assetProtocol.scope in tauri.conf.json).
-      // It streams with HTTP range requests, so big files aren't read into
-      // memory, and its CORS headers keep the video usable as a WebGL texture.
-      const next = await loadPluginClip(
-        convertFileSrc(path),
-        synced ? synced.offset : offset,
-      )
+      for (const item of items) {
+        const synced = item.sync
+          ? await syncOffset(item.path, item.offset, item.sync)
+          : null
+        // convertFileSrc turns the path into an asset:// URL that Tauri serves
+        // from disk (allowed folder: assetProtocol.scope in tauri.conf.json).
+        // It streams with HTTP range requests, so big files aren't read into
+        // memory, and its CORS headers keep the video usable as a WebGL texture.
+        const clip = await loadPluginClip(
+          convertFileSrc(item.path),
+          synced ? synced.offset : item.offset,
+        )
+        loaded.push({
+          clip,
+          path: item.path,
+          syncStatus: synced ? synced.message : '',
+          syncOk: synced ? synced.ok : false,
+        })
+        if (request !== clipRequest) break // a newer request or Clear came in
+      }
       if (request !== clipRequest) {
-        next.dispose() // a newer request or Clear came in meanwhile
+        for (const r of loaded) r.clip.dispose()
         return false
       }
-      clip?.dispose()
-      clip = next
-      clipPath = path
-      syncStatus = synced ? synced.message : ''
-      syncOk = synced ? synced.ok : false
+      for (const r of recordings) r.clip.dispose()
+      recordings = loaded
       return true
     } catch (e) {
+      for (const r of loaded) r.clip.dispose()
       if (request === clipRequest) {
         clipError = e instanceof Error ? e.message : String(e)
       }
@@ -231,9 +252,11 @@
     try {
       const path = await invoke<string | null>('latest_recording')
       if (path) {
-        // We don't know when FL started (estimate 0), so the audio sync
-        // searches wider: ±2 s.
-        await loadClip(path, 0, { searchSeconds: 2, hasAudio: true })
+        // Only into slot 1, to keep it simple. We don't know when FL started
+        // (estimate 0), so the audio sync searches wider: ±2 s.
+        await loadRecordings([
+          { path, offset: 0, sync: { searchSeconds: 2, hasAudio: true } },
+        ])
       } else {
         clipError = 'No recordings yet. Record a window first.'
       }
@@ -244,11 +267,9 @@
 
   function clearClip() {
     clipRequest++ // cancels a load that's still running
-    clip?.dispose()
-    clip = null
-    clipPath = ''
+    for (const r of recordings) r.clip.dispose()
+    recordings = []
     clipError = ''
-    syncStatus = ''
     clipLoading = false
   }
 
@@ -273,13 +294,44 @@
     params = defaultParams(v.params)
   }
 
+  // The recordings the current theme shows: the first pluginSlots of them.
+  // A theme with fewer slots just ignores the rest (they stay loaded, so
+  // switching back shows them again).
+  let shownRecordings = $derived(recordings.slice(0, theme.pluginSlots))
+  let shownClips = $derived(shownRecordings.map((r) => r.clip))
+
   // Free-text substring match on the window title, so any plugin works.
   // Default: Ogun, FL Studio's built-in synth.
   let titleFilter = $state('Ogun')
   let windows = $state<WindowInfo[]>([])
   let windowsError = $state('')
-  // The plugin window to record (its id from list_windows), null = none picked.
-  let selectedWindowId = $state<number | null>(null)
+  // The plugin windows to record, in slot order: [0] is slot 1 (top).
+  // Ids from list_windows.
+  let selectedWindowIds = $state<number[]>([])
+
+  // How many windows the picker allows: the theme's slots, but at least one,
+  // so a theme without a plugin screen can still record a take.
+  let pickerSlots = $derived(Math.max(1, theme.pluginSlots))
+  // What "Play & record" really records. The selection is kept when the
+  // theme changes to fewer slots; only the first ones are used.
+  let usedWindowIds = $derived(selectedWindowIds.slice(0, pickerSlots))
+
+  // Click on a window row: picked -> unpick it (the ones after it move up a
+  // slot); not picked -> give it the next slot. When all slots are taken, it
+  // replaces the last one (so with one slot it works like a radio button).
+  function toggleWindow(id: number) {
+    if (selectedWindowIds.includes(id)) {
+      selectedWindowIds = selectedWindowIds.filter((x) => x !== id)
+    } else {
+      const kept = selectedWindowIds.slice(0, pickerSlots - 1)
+      selectedWindowIds = [...kept, id]
+    }
+  }
+
+  // Slot number (1 = top) of a window, or 0 if it isn't picked.
+  function slotOf(id: number): number {
+    return selectedWindowIds.indexOf(id) + 1
+  }
 
   async function listWindows() {
     windowsError = ''
@@ -290,9 +342,10 @@
       windows = []
       windowsError = String(e)
     }
-    // Forget the selection if that window is gone (or now off screen).
-    const still = windows.find((w) => w.id === selectedWindowId)
-    if (!still || !still.on_screen) selectedWindowId = null
+    // Forget picked windows that are gone (or now off screen).
+    selectedWindowIds = selectedWindowIds.filter((id) =>
+      windows.some((w) => w.id === id && w.on_screen),
+    )
   }
 
   // Take length in seconds. The spec lengths; the take is capped to the beat.
@@ -332,13 +385,14 @@
   let takeError = $state('')
 
   let canRecord = $derived(
-    decoded !== null && selectedWindowId !== null && !recording && !exporting,
+    decoded !== null && usedWindowIds.length > 0 && !recording && !exporting,
   )
 
-  // The one button: FL plays from the start while Rust records the window,
-  // then the recording goes into the preview with its play offset.
+  // The one button: FL plays from the start while Rust records the windows,
+  // then each recording goes into its slot in the preview, with its own
+  // play offset.
   async function playAndRecord() {
-    if (selectedWindowId === null) return
+    if (usedWindowIds.length === 0) return
     // Don't play the beat in the app on top of FL.
     player?.pause()
     takeError = ''
@@ -353,14 +407,19 @@
     }, 250)
 
     try {
+      // In slot order; take.clips comes back in the same order.
       const take = await invoke<Take>('record_take', {
-        windowId: selectedWindowId,
+        windowIds: usedWindowIds,
         seconds,
       })
       // FL starts a little after we send play; the audio sync finds the
-      // exact moment, within ±0.5 s of play_offset.
-      const sync = { searchSeconds: 0.5, hasAudio: take.has_audio }
-      if (await loadClip(take.path, take.play_offset, sync)) {
+      // exact moment, within ±0.5 s of each clip's play_offset.
+      const items = take.clips.map((c) => ({
+        path: c.path,
+        offset: c.play_offset,
+        sync: { searchSeconds: 0.5, hasAudio: c.has_audio },
+      }))
+      if (await loadRecordings(items)) {
         // Back to the start, so Play shows the take from its first beat.
         player?.seek(0)
         takeStatus = 'Done — press Play to preview'
@@ -416,9 +475,10 @@
       sectionStart: SECTION_START,
       length: takeSeconds,
       fps: exportFps,
-      plugin: clip
-        ? { url: convertFileSrc(clipPath), offset: clip.offset }
-        : null,
+      plugins: shownRecordings.map((r) => ({
+        url: convertFileSrc(r.path),
+        offset: r.clip.offset,
+      })),
     }
 
     try {
@@ -504,7 +564,9 @@
       </section>
 
       <section class="mb-6">
-        <h2 class="mb-2 font-semibold">2. Plugin window</h2>
+        <h2 class="mb-2 font-semibold">
+          2. Plugin windows (pick up to {pickerSlots}, in order top → bottom)
+        </h2>
         <div class="mb-2 flex gap-2">
           <input
             class="rounded bg-zinc-800 px-2 py-1"
@@ -522,34 +584,46 @@
         {#if windowsError}
           <p class="mb-2 text-sm text-red-400">{windowsError}</p>
         {/if}
-        <!-- One radio per window; the whole row is the label, so it's clickable. -->
+        <!--
+          One button per window row. Clicking picks it for the next slot (the
+          badge shows the slot number, 1 = top) or unpicks it. Picked windows
+          past the theme's slot count stay picked but greyed out: unused.
+        -->
         <ul class="space-y-1 font-mono text-sm">
           {#each windows as w (w.id)}
+            {@const slot = slotOf(w.id)}
             <li>
-              <label
+              <button
+                type="button"
                 class={[
-                  'flex cursor-pointer items-center gap-2 rounded px-2 py-1',
-                  w.id === selectedWindowId
+                  'flex w-full items-center gap-2 rounded px-2 py-1 text-left disabled:cursor-not-allowed disabled:opacity-50',
+                  slot > 0 && slot <= pickerSlots
                     ? 'bg-sky-800 text-white'
                     : 'hover:bg-zinc-800',
-                  !w.on_screen && 'cursor-not-allowed opacity-50',
+                  slot > pickerSlots && 'bg-zinc-800 text-zinc-400',
                 ]}
+                onclick={() => toggleWindow(w.id)}
+                disabled={!w.on_screen || recording}
               >
-                <input
-                  type="radio"
-                  name="plugin-window"
-                  value={w.id}
-                  bind:group={selectedWindowId}
-                  disabled={!w.on_screen || recording}
-                />
+                <span
+                  class={[
+                    'w-5 shrink-0 rounded text-center',
+                    slot > 0 ? 'bg-sky-500 text-white' : 'bg-zinc-700',
+                  ]}
+                >
+                  {slot > 0 ? slot : ''}
+                </span>
                 <span class="truncate">
                   {w.app_name} | {w.title} | {w.width}×{w.height}
                 </span>
                 {#if !w.on_screen}
                   <span class="text-zinc-400">(off screen)</span>
                 {/if}
+                {#if slot > pickerSlots}
+                  <span class="shrink-0">(not used by this theme)</span>
+                {/if}
                 {#if w.is_fl}<span class="text-sky-300">FL</span>{/if}
-              </label>
+              </button>
             </li>
           {/each}
         </ul>
@@ -593,9 +667,9 @@
           Visualiser" enabled. After updating the script, click "Reload script"
           in FL's Script output window.
         </p>
-        {#if !decoded || selectedWindowId === null}
+        {#if !decoded || usedWindowIds.length === 0}
           <p class="mt-1 text-sm text-zinc-500">
-            Needs a beat and a selected plugin window.
+            Needs a beat and at least one picked plugin window.
           </p>
         {/if}
         {#if recording}
@@ -624,7 +698,7 @@
           <button
             class="rounded bg-zinc-700 px-3 py-1 hover:bg-zinc-600 disabled:opacity-50"
             onclick={clearClip}
-            disabled={(!clip && !clipLoading) || exporting}
+            disabled={(recordings.length === 0 && !clipLoading) || exporting}
           >
             Clear
           </button>
@@ -634,22 +708,26 @@
             Syncing to audio and loading the recording…
           </p>
         {/if}
-        {#if clip}
-          <p class="mt-2 text-sm text-zinc-300" title={clipPath}>
-            {fileName(clipPath)} · {clip.width}×{clip.height} ·
-            {formatTime(clip.duration)} · FL started at {clip.offset.toFixed(3)} s
+        {#each recordings as r, i (i)}
+          <p class="mt-2 text-sm text-zinc-300" title={r.path}>
+            Window {i + 1}: {fileName(r.path)} ·
+            {r.clip.width}×{r.clip.height} · {formatTime(r.clip.duration)} · FL started
+            at {r.clip.offset.toFixed(3)} s
+            {#if i >= theme.pluginSlots}
+              <span class="text-zinc-500">(not shown by this theme)</span>
+            {/if}
           </p>
-          {#if syncStatus}
+          {#if r.syncStatus}
             <p
               class={[
                 'mt-1 text-sm',
-                syncOk ? 'text-green-400' : 'text-amber-400',
+                r.syncOk ? 'text-green-400' : 'text-amber-400',
               ]}
             >
-              {syncStatus}
+              Window {i + 1}: {r.syncStatus}
             </p>
           {/if}
-        {/if}
+        {/each}
         {#if clipError}
           <p class="mt-2 text-sm text-red-400">{clipError}</p>
         {/if}
@@ -682,7 +760,11 @@
         </div>
         <p class="mt-2 text-sm text-zinc-400">
           {formatTime(takeSeconds)} from the start of the beat, 1080×1920 H.264 +
-          AAC from the beat file{clip ? ', with the plugin recording' : ''}.
+          AAC from the beat file{shownClips.length === 1
+            ? ', with the plugin recording'
+            : shownClips.length > 1
+              ? `, with ${shownClips.length} plugin recordings`
+              : ''}.
         </p>
         {#if exporting}
           <div class="mt-2 flex items-center gap-3">
@@ -761,7 +843,7 @@
           {frameSource}
           getTime={getPlaybackTime}
           isPlaying={isBeatPlaying}
-          {clip}
+          clips={shownClips}
         />
         {#if theme.params.length > 0}
           <div class="w-64">

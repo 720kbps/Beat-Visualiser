@@ -7,6 +7,10 @@ export const MAX_PARAMS = 5
 
 const COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/ // '#rrggbb', what <input type="color"> uses
 
+// Longest maxLength a text param may ask for. Text params are short lines
+// (a title, a tag), not paragraphs.
+export const MAX_TEXT_LENGTH = 200
+
 // The starting values for a schema: every param at its default.
 export function defaultParams(schema: ParamSchema): ParamValues {
   const values: ParamValues = {}
@@ -64,6 +68,21 @@ export function validateSchema(schema: ParamSchema): void {
           `Param "${def.id}": color must look like '#rrggbb', got '${def.default}'`,
         )
       }
+    } else if (def.type === 'text') {
+      if (
+        !Number.isInteger(def.maxLength) ||
+        def.maxLength < 1 ||
+        def.maxLength > MAX_TEXT_LENGTH
+      ) {
+        throw new Error(
+          `Param "${def.id}": maxLength must be a whole number 1..${MAX_TEXT_LENGTH}, got ${def.maxLength}`,
+        )
+      }
+      if (def.default.length > def.maxLength) {
+        throw new Error(
+          `Param "${def.id}": default is longer than maxLength (${def.maxLength})`,
+        )
+      }
     }
     // 'toggle' has nothing to check: TypeScript already makes default a boolean.
   }
@@ -97,4 +116,13 @@ export function toggleParam(
 ): boolean {
   const v = values[id]
   return typeof v === 'boolean' ? v : fallback
+}
+
+export function textParam(
+  values: ParamValues,
+  id: string,
+  fallback: string,
+): string {
+  const v = values[id]
+  return typeof v === 'string' ? v : fallback
 }

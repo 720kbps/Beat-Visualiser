@@ -6,7 +6,7 @@
 import type { RenderContext } from '../render/renderer'
 
 // One control a theme exposes. `type` decides which UI control is shown and what
-// kind of value it produces (number, '#rrggbb' string, or boolean).
+// kind of value it produces (number, '#rrggbb' string, boolean, or text).
 export type ParamDef =
   | {
       id: string
@@ -19,13 +19,21 @@ export type ParamDef =
     }
   | { id: string; label: string; type: 'color'; default: string } // '#rrggbb'
   | { id: string; label: string; type: 'toggle'; default: boolean }
+  // A short line of text, e.g. a title. maxLength caps what the user can type.
+  | {
+      id: string
+      label: string
+      type: 'text'
+      default: string
+      maxLength: number
+    }
 
 export type ParamSchema = ParamDef[]
 
 // Current value of every param, by id. Built with defaultParams(schema).
 export type ParamValues = Record<string, number | string | boolean>
 
-// The recorded plugin clip as the theme gets it:
+// One recorded plugin window as the theme gets it:
 // - preview: the <video> element (video/plugin-clip.ts), already on the right frame
 // - export: a canvas the exporter draws each decoded frame into (export/plugin-frames.ts)
 export type VideoFrameSource = HTMLVideoElement | HTMLCanvasElement
@@ -39,13 +47,20 @@ export type FrameData = {
   rms: number // current loudness, 0..1 (normalized)
   bass: number // current low-frequency energy (< ~150 Hz), 0..1 (normalized)
   beat: boolean // true on a beat frame (always false until Phase 4 beat detection)
-  plugin?: VideoFrameSource
+  // The recorded plugin windows, one per slot: plugins[0] is slot 1 (top).
+  // May be shorter than the theme's pluginSlots (fewer windows recorded), and
+  // empty when there is no recording. Read the size from the element:
+  // videoWidth/videoHeight for a <video>, width/height for a canvas.
+  plugins: VideoFrameSource[]
 }
 
 export interface Visualizer {
   id: string
   name: string
   params: ParamSchema
+  // How many plugin windows the theme shows (0 = none). The window picker
+  // lets the user pick up to this many, in order.
+  pluginSlots: number
   init(ctx: RenderContext): void // create GPU resources once
   render(frame: FrameData, params: ParamValues): void // draw one frame
   dispose(): void // free everything init created

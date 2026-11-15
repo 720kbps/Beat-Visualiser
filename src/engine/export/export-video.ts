@@ -66,9 +66,10 @@ export type ExportOptions = {
   sectionStart: number // seconds into the beat where the clip starts
   length: number // seconds
   fps: number // 30 or 60
-  // The recorded plugin window, or null to export without it.
-  // url: readable by fetch (asset:// in the app); offset: the take's play_offset.
-  plugin: { url: string; offset: number } | null
+  // The recorded plugin windows, one per slot (top first); empty to export
+  // without any. url: readable by fetch (asset:// in the app);
+  // offset: that clip's play_offset (each clip has its own).
+  plugins: { url: string; offset: number }[]
 }
 
 // Called with 0..1, at most ~10 times a second.
@@ -134,16 +135,19 @@ export async function exportVideo(
   })
   output.addAudioTrack(sound)
 
-  let plugin: PluginFrameReader | null = null
+  // One frame reader per plugin clip, in slot order. Each has its own
+  // decoder and its own offset, so each clip is lined up with the beat.
+  const readers: PluginFrameReader[] = []
   try {
-    if (options.plugin) {
-      const { url, offset } = options.plugin
+    for (const { url, offset } of options.plugins) {
       const times: number[] = []
       for (let i = 0; i < totalFrames; i++) {
         times.push(pluginVideoTime(i, fps, options.sectionStart, offset))
       }
-      plugin = await openPluginFrames(url, times)
+      readers.push(await openPluginFrames(url, times))
     }
+    // The canvases never change, only their pixels: build the list once.
+    const pluginCanvases = readers.map((reader) => reader.canvas)
 
     await output.start()
 
@@ -165,11 +169,11 @@ export async function exportVideo(
         audioIndex++
       }
 
-      // The plugin picture for this frame, drawn into plugin.canvas.
-      if (plugin) await plugin.next()
+      // Each plugin picture for this frame, drawn into its reader's canvas.
+      for (const reader of readers) await reader.next()
 
       const frame = frameSource.getFrame(t)
-      frame.plugin = plugin ? plugin.canvas : undefined
+      frame.plugins = pluginCanvases
       visualizer.render(frame, params)
       // No await between render() and add(): add() snapshots the canvas
       // synchronously, then we wait for the encoder (backpressure).
@@ -197,7 +201,7 @@ export async function exportVideo(
     await output.cancel().catch(() => {})
     throw err
   } finally {
-    await plugin?.dispose().catch(() => {})
+    for (const reader of readers) await reader.dispose().catch(() => {})
   }
 
   const buffer = target.buffer

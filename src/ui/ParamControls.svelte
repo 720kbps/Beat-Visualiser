@@ -1,6 +1,7 @@
 <script lang="ts">
   // Builds the controls for a theme from its param schema:
-  // number -> slider, color -> color picker, toggle -> checkbox.
+  // number -> slider, color -> color picker, toggle -> checkbox,
+  // text -> text field.
   //
   // How the values get back to the parent: `values` is $bindable, and the parent
   // passes its own $state object with bind:
@@ -38,6 +39,10 @@
   function toggleValue(def: ParamDef & { type: 'toggle' }): boolean {
     const v = values[def.id]
     return typeof v === 'boolean' ? v : def.default
+  }
+  function textValue(def: ParamDef & { type: 'text' }): string {
+    const v = values[def.id]
+    return typeof v === 'string' ? v : def.default
   }
 
   // Show as many decimals as the step has: step 0.01 -> "0.50", step 1 -> "3"
@@ -79,6 +84,15 @@
           class="justify-self-start"
           checked={toggleValue(def)}
           onchange={(e) => (values[def.id] = e.currentTarget.checked)}
+        />
+      {:else if def.type === 'text'}
+        <!-- col-span-2: the text field also takes the value column -->
+        <input
+          type="text"
+          class="col-span-2 rounded bg-zinc-800 px-2 py-1"
+          maxlength={def.maxLength}
+          value={textValue(def)}
+          oninput={(e) => (values[def.id] = e.currentTarget.value)}
         />
       {/if}
     </label>

@@ -156,6 +156,7 @@ export function createFrameSource(
       rms: sample(rms, t),
       bass: sample(bass, t),
       beat: false, // Phase 4: beat detection
+      plugins: [], // filled in by the caller (preview or export)
     }
   }
 
