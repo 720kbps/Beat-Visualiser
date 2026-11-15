@@ -4,7 +4,7 @@ A desktop app (macOS and Windows) that turns a beat into a TikTok-ready 9:16 vid
 
 It controls FL Studio, **automatically records a plugin window while the beat plays**, and puts that recording into a retro hardware-style video together with the real waveform of the track. No screen recorder, no video editing.
 
-> **Status:** early development. The repo is currently an empty Tauri + Svelte app shell. Nothing below is working yet; this README describes what is being built.
+> **Status:** early development. On macOS the core workflow works for one beat: record FL windows in sync, preview with a theme, export an MP4. Highlight detection, onboarding and Windows are not built yet.
 
 ## How it works
 
@@ -87,11 +87,11 @@ The first `tauri dev` compiles all Rust dependencies and takes a few minutes. La
 ## Roadmap
 
 - [x] **Phase 0, setup:** Tailwind, ESLint + Prettier, engine/UI folders, Tauri
-- [ ] **Phase 1, spike:** list windows from Rust, record a plugin window on macOS and Windows, FL script for play/stop, trigger FL from the app
-- [ ] **Phase 2, audio in:** drop zone, decoding, waveform with playhead
-- [ ] **Phase 3, first theme:** LCD sampler theme with the recording as a video texture
+- [x] **Phase 1, spike:** list windows from Rust, record a plugin window, FL script for play/stop, trigger FL from the app (macOS; Windows not started)
+- [x] **Phase 2, audio in:** drop zone, decoding, waveform with playhead
+- [x] **Phase 3, first theme:** LCD sampler theme with the recording as a video texture (plus a Stack theme)
 - [ ] **Phase 4:** automatic highlight detection
-- [ ] **Phase 5:** full record flow and audio sync
-- [ ] **Phase 6:** MP4 export
+- [ ] **Phase 5:** full record flow and audio sync (mostly done on macOS)
+- [x] **Phase 6:** MP4 export (macOS; upload test pending)
 - [ ] **Phase 7:** onboarding and polish
 - [ ] **Phase 8:** signed releases and testing with producers

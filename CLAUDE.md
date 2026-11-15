@@ -202,14 +202,38 @@ Phases (the full checklist lives in Bogdan's "Beat Visualizer Build Plan" page):
 - **Phase 8, Ship and validate:** code signing (Apple notarization, Windows signing), Tauri bundler + auto-updater, post 10+ videos, test with 5 to 10 producers.
 - **Later (only after validation):** more themes (paper, generative), multiple plugin windows, other DAWs, VST sync plugin, accounts/presets/payments, direct posting.
 
-**Current repo state (as of 2026-11-12):**
+**Current repo state (as of 2026-11-15):**
 
-- Phase 0 is done. Next up is the Phase 1 spike.
-- Vite + Svelte 5 + TypeScript, Tailwind v4 wired up, template removed. `src/ui/App.svelte` is a placeholder; `src/engine/` is empty (`.gitkeep`).
-- ESLint (flat config, `eslint.config.js`) + Prettier (no semicolons, single quotes). ESLint enforces the engine rule: `src/engine/**` can't import `svelte`, `.svelte` files or `ui/`, and can't use runes.
-- Tauri 2 in `src-tauri/` (crate `beat-visualiser`, lib `beat_visualiser_lib`, identifier `com.bogdanmocanu.beatvisualiser`). `npm run tauri dev` works on macOS. Vite runs on a fixed port 5173 (`strictPort`) because Tauri's `devUrl` points there.
-- Pushed to GitHub: `github.com/720kbps/Beat-Visualiser`.
-- Not set up or tested yet: the Windows build machine (needs MSVC Build Tools + WebView2).
+The full workflow works on **macOS** for one beat: drop beat → pick 1–3 FL windows → "Play & record" (FL plays from the start in song mode while the windows record) → preview synced by audio cross-correlation → export MP4. Windows (the OS) is not started.
+
+- **Phases:**
+  - Phases 0–3 are done on macOS.
+  - Phase 5 is mostly done: song mode, rewind, recording exactly the section length, system audio, cross-correlation, and the window picker. Not done: jumping to an arbitrary song position (needed once Phase 4 picks sections), the script reporting position back, and greying out docked windows.
+  - Phase 6 is done except the ffmpeg benchmark, which was decided against (WebCodecs, about 55 fps measured) and the TikTok/Instagram upload test.
+  - Phase 4 (highlight detection) is not started; the section is always 0 → 15/30/60 s.
+- **Rust (`src-tauri/src/`):**
+  - `window_list.rs`, `recorder.rs` (ScreenCaptureKit SCRecordingOutput, HEVC .mov with FL's audio, macOS 15+)
+  - `take.rs` (`record_take(window_ids, seconds)` → per-clip `play_offset`, `has_audio`)
+  - `fl_midi.rs` (virtual port "Beat Visualiser"; notes 60 play, 61 stop, 63 rewind + song mode, 62 reserved for ping)
+  - `audio_file.rs`, `recordings.rs`, `export_file.rs`
+  - Files live in `~/Movies/Beat Visualiser/`.
+- **FL script:** `fl-script/BeatVisualiser/`, installed by copying it into FL's `Settings/Hardware`. After changing it, click "Reload script" in FL.
+- **Engine (`src/engine/`):**
+  - `audio/`: decode, peaks, player
+  - `frame/`: deterministic FrameData, rms/bass per 10 ms
+  - `render/`: Three.js, fixed 1080×1920, shaders write display sRGB
+  - `visualizers/`: `lcd-sampler` (GLSL split into 5 files), `stack` (title + up to 3 windows), `test-pattern`; themes declare `pluginSlots`; params support number/color/toggle/text, max 5
+  - `video/`: preview clip sync
+  - `sync/`: cross-correlation
+  - `export/`: WebCodecs + Mediabunny 1.65.0 (MPL-2.0); AAC needs Safari 26's WebKit
+- **UI:** `src/ui/App.svelte` is still a spike-style numbered flow; onboarding is not built.
+- **Tooling:** ESLint (with the engine-must-not-import-Svelte rule), Prettier (no semicolons, single quotes), and vitest (`npm test`).
+- **Repo:** GitHub `github.com/720kbps/Beat-Visualiser`. Recent commits are local and not pushed.
+- **Known gaps:**
+  - Windows build untested (needs MSVC Build Tools + WebView2, and a loopback MIDI port).
+  - FL title bars are visible in recordings (the LCD shader has an unused `uPluginCropTop`).
+  - A whole export is held in memory.
+  - Each theme instance is single-use, so preview and export share it.
 
 ## Risks to keep in mind
 
