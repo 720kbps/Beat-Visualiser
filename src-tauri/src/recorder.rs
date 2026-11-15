@@ -12,15 +12,16 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 // How a take uses this (see take.rs):
-//   let rec = Recording::prepare(id, folder)?;  // checks, builds the stream
+//   let rec = Recording::prepare(id, &path)?;   // checks, builds the stream
 //   rec.start()?;                               // capture begins
 //   let t0 = rec.wait_until_started(..)?;       // the file's time 0
 //   ... send play to FL ...
-//   rec.record_for(length)?;                    // just waits
+//   rec.check_error()?;                         // every 50 ms while waiting
 //   let heard = rec.has_audio();                // any sound in the take?
 //   let path = rec.finish()?;                   // closes the file
 // Always call finish() once start() was called, also after an error, so the
-// stream stops and the file gets closed.
+// stream stops and the file gets closed. Several Recordings can run at the
+// same time, one per window (take.rs records up to 3).
 
 /// One window recording into a .mov file.
 #[cfg(target_os = "macos")]
@@ -41,10 +42,10 @@ pub struct Recording {
 #[cfg(target_os = "macos")]
 impl Recording {
     /// Finds the window with this id (the SCWindow windowID from
-    /// `list_windows`) and sets up a recording into a new .mov file inside
-    /// `folder`. Checks permission and that the window is on screen.
-    /// Doesn't start capturing yet: call `start()`.
-    pub fn prepare(window_id: u32, folder: &Path) -> Result<Recording, String> {
+    /// `list_windows`) and sets up a recording into the .mov file at `path`
+    /// (its folder must exist). Checks permission and that the window is on
+    /// screen. Doesn't start capturing yet: call `start()`.
+    pub fn prepare(window_id: u32, path: &Path) -> Result<Recording, String> {
         use screencapturekit::prelude::*;
         use screencapturekit::recording_output::{
             RecordingCallbacks, SCRecordingOutput, SCRecordingOutputCodec,
@@ -54,7 +55,6 @@ impl Recording {
         use screencapturekit::stream::delegate_trait::StreamCallbacks;
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::{Arc, Mutex};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         crate::window_list::check_screen_recording_permission()?;
 
@@ -112,18 +112,9 @@ impl Recording {
             .with_capture_resolution_type(SCCaptureResolutionType::Best)
             .map_err(|e| format!("Could not configure capture: {e}"))?;
 
-        // Build the output file path, e.g. ~/Movies/Beat Visualiser/take-1763112345.mov
-        std::fs::create_dir_all(folder)
-            .map_err(|e| format!("Could not create folder {}: {e}", folder.display()))?;
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let path = folder.join(format!("take-{timestamp}.mov"));
-
         let recording_config = SCRecordingOutputConfiguration::new()
             .map_err(|e| format!("Recording needs macOS 15 or newer: {e}"))?
-            .with_output_url(&path)
+            .with_output_url(path)
             .map_err(|e| format!("Bad output path {}: {e}", path.display()))?
             .with_video_codec(SCRecordingOutputCodec::HEVC)
             .with_output_file_type(SCRecordingOutputFileType::MOV);
@@ -184,7 +175,7 @@ impl Recording {
         Ok(Recording {
             stream,
             output,
-            path,
+            path: path.to_path_buf(),
             error,
             started_at,
             heard_audio,
@@ -221,20 +212,6 @@ impl Recording {
         }
     }
 
-    /// Keeps recording for `length`, checking for failures every 50 ms so a
-    /// closed window stops the take early.
-    pub fn record_for(&self, length: Duration) -> Result<(), String> {
-        let deadline = Instant::now() + length;
-        loop {
-            self.check_error()?;
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(());
-            }
-            std::thread::sleep((deadline - now).min(Duration::from_millis(50)));
-        }
-    }
-
     /// True once the window's app played something audible during the take.
     /// The file always gets an audio track; without sound it's just silence.
     pub fn has_audio(&self) -> bool {
@@ -259,8 +236,9 @@ impl Recording {
         }
     }
 
-    // The first error a callback reported, if any.
-    fn check_error(&self) -> Result<(), String> {
+    /// The first error a callback reported, if any (window closed, writing
+    /// failed). Call it regularly while recording.
+    pub fn check_error(&self) -> Result<(), String> {
         match self.error.lock().unwrap().as_ref() {
             Some(e) => Err(e.clone()),
             None => Ok(()),
@@ -295,7 +273,7 @@ pub struct Recording;
 
 #[cfg(not(target_os = "macos"))]
 impl Recording {
-    pub fn prepare(_window_id: u32, _folder: &Path) -> Result<Recording, String> {
+    pub fn prepare(_window_id: u32, _path: &Path) -> Result<Recording, String> {
         Err("Window recording is only implemented on macOS for now.".to_string())
     }
 
@@ -307,7 +285,7 @@ impl Recording {
         Err("Window recording is only implemented on macOS for now.".to_string())
     }
 
-    pub fn record_for(&self, _length: Duration) -> Result<(), String> {
+    pub fn check_error(&self) -> Result<(), String> {
         Err("Window recording is only implemented on macOS for now.".to_string())
     }
 

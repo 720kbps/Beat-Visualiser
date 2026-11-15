@@ -32,9 +32,10 @@ async fn list_windows(
     window_list::list_windows(title_filter)
 }
 
-// The one-button take: FL plays from the song start while we record the
-// window for `seconds`, then FL stops. Returns the file and the play offset
-// (see take.rs).
+// The one-button take: FL plays from the song start while we record 1 to 3
+// windows for `seconds`, then FL stops. Returns one clip (file + play
+// offset) per window, in the same order as `window_ids` (see take.rs).
+// JS: invoke('record_take', { windowIds, seconds })
 //
 // The take blocks for the whole duration, so it runs on a separate
 // "blocking" thread (spawn_blocking). That keeps both the UI thread and
@@ -42,7 +43,7 @@ async fn list_windows(
 #[tauri::command]
 async fn record_take(
     app: tauri::AppHandle,
-    window_id: u32,
+    window_ids: Vec<u32>,
     seconds: u32,
 ) -> Result<take::Take, String> {
     let folder = recordings_folder(&app)?;
@@ -52,7 +53,7 @@ async fn record_take(
     // in managed state, like a command's `State` argument would.
     tauri::async_runtime::spawn_blocking(move || {
         let port = app.state::<FlPort>();
-        take::record_take(&port, window_id, seconds, &folder)
+        take::record_take(&port, &window_ids, seconds, &folder)
     })
     .await
     .map_err(|e| format!("Recording thread crashed: {e}"))?
