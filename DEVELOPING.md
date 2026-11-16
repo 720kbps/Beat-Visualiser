@@ -105,7 +105,7 @@ MIDI protocol (channel 1, note-on; full details in [fl-script/README.md](fl-scri
 | ---- | ----------------------------------------- |
 | 60   | Play (only if stopped; ensures song mode) |
 | 61   | Stop                                      |
-| 62   | Ping: the script answers with note 62     |
+| 62   | Ping: the script answers with note 65     |
 | 63   | Rewind to song start (ensures song mode)  |
 | 64   | Jump to the position sent as CC 20/21/22  |
 
@@ -156,7 +156,7 @@ The onboarding GIF for step 3 is loaded from `public/onboarding/fl-midi-settings
 
 ## 7. Known gaps
 
-- Windows (the OS): window listing and video-only recording are written but have never run. See [docs/windows-testing.md](docs/windows-testing.md). MIDI (loopback ports) and audio capture aren't written yet.
+- Windows (the OS): window listing, recording with FL's audio, and MIDI through loopback ports are written but have never run. See [docs/windows-testing.md](docs/windows-testing.md).
 - No BPM or key detection: the user types the BPM, and bar 1 is assumed to be at 0 s of the file (true for FL exports from the song start).
 - The highlight weights (`SCORE_WEIGHTS` in [features.ts](src/engine/analysis/features.ts)) aren't tuned on real beats yet.
 - FL title bars are visible in recordings (the LCD shader has an unused `uPluginCropTop`).

@@ -206,7 +206,13 @@ Phases (the full checklist lives in Bogdan's "Beat Visualizer Build Plan" page):
 
 The full workflow works on **macOS** for one beat: drop beat → pick 1–3 FL windows → "Play & record" (FL plays from the section start in song mode while the windows record) → preview synced by audio cross-correlation → export MP4.
 
-**Windows (the OS):** step 1 (window list + video-only recording to H.264 `.mp4`) is written blind in `window_list_windows.rs` and `recorder_windows.rs`, behind `#[cfg(target_os = "windows")]`. It type-checks for `x86_64-pc-windows-msvc` but has never run; `docs/windows-testing.md` is the test checklist (`TEST:` comments in the code). MIDI and audio on Windows are not started.
+**Windows (the OS):** written blind, behind `#[cfg(target_os = "windows")]`, type-checked for `x86_64-pc-windows-msvc`, never run; `docs/windows-testing.md` is the test checklist (`TEST:` comments in the code).
+
+- Step 1: window list + recording to H.264 `.mp4` (`window_list_windows.rs`, `recorder_windows.rs`).
+- Step 2: MIDI through two user-created loopback ports, "Beat Visualiser" (app → FL) and "Beat Visualiser Reply" (FL → app), connected by name and reconnected when they appear (`fl_midi.rs`); setup has Windows steps. The pong is note 65 (not 62) so a looped-back answer can't trigger another.
+- Step 3: FL's audio in the `.mp4` via WASAPI process loopback (`wasapi` crate, FL's process even for bridged plugins), kept in step with the video by `audio_clock.rs` (silence fills gaps).
+- Tests: `cargo test` on Windows runs automatic Windows tests (window list, id round trip, missing window/port messages); `cargo test -- --ignored` runs the FL + loopMIDI ones.
+- Left: fixes from the first test session, Windows setup GIF, loopMIDI license (or Windows MIDI Services), installer + signing.
 
 - **Phases:**
   - Phases 0–3 are done on macOS.
@@ -216,7 +222,7 @@ The full workflow works on **macOS** for one beat: drop beat → pick 1–3 FL w
 - **Rust (`src-tauri/src/`):**
   - `window_list.rs`, `recorder.rs` (ScreenCaptureKit SCRecordingOutput, HEVC .mov with FL's audio, macOS 15+)
   - `take.rs` (`record_take(window_ids, seconds)` → per-clip `play_offset`, `has_audio`)
-  - `fl_midi.rs` (virtual ports "Beat Visualiser", out and in; notes 60 play, 61 stop, 62 ping (the script answers on FL's linked output), 63 rewind, 64 jump to the ms position sent as CC 20/21/22; rewind and jump ensure song mode). Every take pings first, then jumps to the section start.
+  - `fl_midi.rs` (virtual ports "Beat Visualiser", out and in; notes 60 play, 61 stop, 62 ping (the script answers with note 65 on FL's linked output), 63 rewind, 64 jump to the ms position sent as CC 20/21/22; rewind and jump ensure song mode). Every take pings first, then jumps to the section start.
   - `fl_script.rs` (the FL script is compiled in and copied into FL's `Settings/Hardware` on launch), `permission.rs` (Screen Recording status/request)
   - `audio_file.rs`, `recordings.rs`, `export_file.rs`
   - Files live in `~/Movies/Beat Visualiser/`.

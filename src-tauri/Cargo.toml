@@ -44,5 +44,9 @@ objc2-core-graphics = { version = "0.3.2", default-features = false, features = 
 # UNTESTED on Windows so far (see recorder.rs, "Windows" section).
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-capture = "2.0.1"
-# Same version windows-capture uses; only for IsIconic and the window list.
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging"] }
+# Same version windows-capture uses; for the window list, IsIconic and
+# finding FL's process.
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_ToolHelp"] }
+# FL's audio for the recording: WASAPI "process loopback" (one app's sound
+# only), Windows 10 2004+. UNTESTED (see recorder_windows.rs).
+wasapi = "0.27.0"

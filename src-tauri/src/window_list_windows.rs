@@ -109,12 +109,63 @@ fn visible_size(hwnd: HWND) -> Option<(i32, i32)> {
 // usually contain "FL Studio".
 // TEST: check the real process name in Task Manager (Details tab).
 fn is_fl_studio(process: &str, title: &str) -> bool {
-    let process = process.to_lowercase();
-    process == "fl64.exe" || process == "fl.exe" || title.to_lowercase().contains("fl studio")
+    is_fl_process(process) || title.to_lowercase().contains("fl studio")
+}
+
+/// True for FL Studio's own process name. Also used to find FL's audio.
+pub fn is_fl_process(name: &str) -> bool {
+    let name = name.to_lowercase();
+    name == "fl64.exe" || name == "fl.exe"
 }
 
 /// Turns a WindowInfo id back into the window handle.
 pub fn hwnd_from_id(id: u32) -> HWND {
     // Sign-extend like Windows does when a 32-bit handle goes to 64 bits.
     HWND(id as i32 as isize as *mut std::ffi::c_void)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Automatic: needs only a Windows desktop with any window open (the
+    // terminal running the tests counts).
+    #[test]
+    fn lists_windows_with_real_sizes() {
+        let windows = list_windows(None).unwrap();
+        for w in &windows {
+            println!(
+                "{:>10}  {}x{}  fl={}  [{}] {}",
+                w.id, w.width, w.height, w.is_fl, w.app_name, w.title
+            );
+        }
+        assert!(!windows.is_empty(), "no windows listed");
+        for w in &windows {
+            assert!(w.id != 0, "{}: id 0", w.title);
+            assert!(
+                w.width >= MIN_SIZE as u32 && w.height >= MIN_SIZE as u32,
+                "{}: too small",
+                w.title
+            );
+        }
+    }
+
+    // Automatic: every listed id, cut to 32 bits, still leads to the same
+    // window (the "HWND fits in 32 bits" assumption).
+    #[test]
+    fn ids_lead_back_to_the_same_window() {
+        for w in list_windows(None).unwrap() {
+            let again = Window::from_raw_hwnd(hwnd_from_id(w.id).0);
+            assert_eq!(again.title().unwrap_or_default(), w.title, "id {}", w.id);
+        }
+    }
+
+    #[test]
+    fn recognizes_fl_studio() {
+        assert!(is_fl_process("FL64.exe"));
+        assert!(is_fl_process("fl.exe"));
+        assert!(!is_fl_process("ilbridge.exe"));
+        assert!(is_fl_studio("ilbridge.exe", "Serum (FL Studio 2024)"));
+        assert!(!is_fl_studio("chrome.exe", "YouTube"));
+    }
 }

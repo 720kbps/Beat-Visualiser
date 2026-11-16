@@ -1,3 +1,4 @@
+mod audio_clock;
 mod audio_file;
 mod export_file;
 mod fl_midi;
@@ -141,6 +142,9 @@ fn setup_status(
     listener: tauri::State<'_, FlListener>,
 ) -> SetupStatus {
     let hardware = fl_hardware_folder(&app);
+    // Windows: picks up loopback ports created since the last check, so
+    // setup's "Check again" works without restarting the app.
+    fl_midi::reconnect_if_needed(&port, &listener);
     let midi_error = fl_midi::check_port(&port)
         .and_then(|_| listener.check())
         .err();
@@ -227,6 +231,7 @@ async fn fl_ping(app: tauri::AppHandle) -> Result<u32, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let port = app.state::<FlPort>();
         let listener = app.state::<FlListener>();
+        fl_midi::reconnect_if_needed(&port, &listener);
         fl_midi::ping(&port, &listener).map(|d| d.as_millis() as u32)
     })
     .await
@@ -275,9 +280,10 @@ pub fn run() {
             }
             app.manage(FlPort(Mutex::new(port)));
 
-            // The input FL answers on (for "Test connection"). Same name, so
-            // in FL's MIDI settings both are called "Beat Visualiser".
-            let listener = fl_midi::create_listener(fl_midi::PORT_NAME);
+            // The input FL answers on (for "Test connection"). macOS: the
+            // same name, so in FL both are "Beat Visualiser". Windows: the
+            // "Beat Visualiser Reply" loopback port (see fl_midi.rs).
+            let listener = fl_midi::create_listener(fl_midi::LISTEN_PORT_NAME);
             if let Err(e) = listener.check() {
                 log::error!("{e}");
             }
