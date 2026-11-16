@@ -3,9 +3,9 @@
 // is the one-button flow (CLAUDE.md, User flow step 4).
 //
 // Order:
-//   1. check everything we can (window list, length, MIDI port, and for
-//      every window: permission, exists, on screen)
-//   2. FL: stop, rewind to the song start
+//   1. check everything we can (window list, length, MIDI port, FL answers
+//      a ping, and for every window: permission, exists, on screen)
+//   2. FL: stop, jump to the section start
 //   3. start every recording, wait until each one has its first frame
 //      (= that file's video time 0)
 //   4. FL: play, once. Each clip's play_offset is measured from its own
@@ -19,7 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::fl_midi::{self, FlPort};
+use crate::fl_midi::{self, FlListener, FlPort};
 use crate::recorder::Recording;
 
 /// What the UI gets back. Field names stay snake_case in JS.
@@ -64,16 +64,28 @@ const START_TIMEOUT: Duration = Duration::from_secs(3);
 /// length, so call it from a background thread.
 pub fn record_take(
     port: &FlPort,
+    listener: &FlListener,
     window_ids: &[u32],
-    seconds: u32,
+    start_seconds: f64,
+    seconds: f64,
     folder: &Path,
 ) -> Result<Take, String> {
     // 1. Checks first, so a bad take never touches FL.
     check_window_ids(window_ids)?;
-    if !(1..=60).contains(&seconds) {
-        return Err(format!("Length must be 1 to 60 seconds, got {seconds}."));
+    // Lengths are a whole number of bars, so not whole seconds (8 bars at
+    // 140 BPM = 13.71 s).
+    if !(1.0..=60.0).contains(&seconds) {
+        return Err(format!("Length must be 1 to 60 seconds, got {seconds:.2}."));
+    }
+    let start_ms = (start_seconds * 1000.0).round();
+    if !(0.0..=fl_midi::MAX_JUMP_MS as f64).contains(&start_ms) {
+        return Err(format!(
+            "The section start ({start_seconds:.2} s) is out of range."
+        ));
     }
     fl_midi::check_port(port)?;
+    // FL must really be listening, or we'd record a silent, still take.
+    fl_midi::ping(port, listener)?;
 
     // Each prepare checks permission and that the window still exists and is
     // on screen. If one fails, the ones already prepared are simply dropped:
@@ -88,10 +100,12 @@ pub fn record_take(
         recordings.push(recording);
     }
 
-    // 2. FL to the song start, not playing. The script handles the notes in
-    // the order they arrive, so the rewind lands before the play below.
+    // 2. FL to the section start, not playing. The script handles the
+    // messages in the order they arrive, so the jump lands before the play.
+    // FL's song position in ms matches the beat file's time because the beat
+    // was exported from the song start.
     fl_midi::send_to_fl(port, fl_midi::send_stop)?;
-    fl_midi::send_to_fl(port, fl_midi::send_rewind)?;
+    fl_midi::send_to_fl(port, |conn| fl_midi::send_jump(conn, start_ms as u32))?;
 
     // 3 to 5.
     let result = play_and_record(port, &recordings, seconds);
@@ -146,7 +160,7 @@ pub fn record_take(
 fn play_and_record(
     port: &FlPort,
     recordings: &[Recording],
-    seconds: u32,
+    seconds: f64,
 ) -> Result<Vec<f64>, String> {
     let count = recordings.len();
 
@@ -181,7 +195,7 @@ fn play_and_record(
 
     // Keep recording, checking every 50 ms that no recording failed (e.g. a
     // window was closed), so a broken take stops early.
-    let deadline = Instant::now() + Duration::from_secs(seconds.into()) + TAIL;
+    let deadline = Instant::now() + Duration::from_secs_f64(seconds) + TAIL;
     loop {
         for (i, recording) in recordings.iter().enumerate() {
             recording
@@ -271,7 +285,7 @@ mod macos_tests {
     use super::*;
 
     // A 2 s take of up to 2 on-screen windows, without FL: the notes go to a
-    // test MIDI port nobody listens to. Proves the timing path and that the
+    // test MIDI port, and a fake "FL" thread answers the ping. Proves the timing path and that the
     // files are written. Ignored by default because it really records your
     // screen. Run with:
     //   cargo test take_without_fl -- --ignored --nocapture
@@ -284,6 +298,23 @@ mod macos_tests {
         // Own port name so a running FL never reacts to this test.
         let name = format!("Beat Visualiser Take Test {}", std::process::id());
         let port = FlPort(Mutex::new(fl_midi::create_port(&name)));
+        let listener = fl_midi::create_listener(&name);
+        // Fake FL: answers every ping on our input with note-on 62.
+        let output = midir::MidiOutput::new("Fake FL").unwrap();
+        let target = output
+            .ports()
+            .into_iter()
+            .find(|p| output.port_name(p).ok().as_deref() == Some(name.as_str()))
+            .expect("virtual input not found");
+        let mut fake_fl = output.connect(&target, "fake fl").unwrap();
+        std::thread::spawn(move || {
+            for _ in 0..40 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                if fake_fl.send(&[0x90, 62, 127]).is_err() {
+                    break;
+                }
+            }
+        });
 
         // TAKE_TEST_APP=Music picks windows of an app whose name contains
         // that text. Handy for checking audio: only the window's own app is
@@ -301,7 +332,8 @@ mod macos_tests {
         }
         let ids: Vec<u32> = picked.iter().map(|w| w.id).collect();
 
-        let take = record_take(&port, &ids, 2, &std::env::temp_dir()).expect("take failed");
+        let take = record_take(&port, &listener, &ids, 0.0, 2.0, &std::env::temp_dir())
+            .expect("take failed");
         assert_eq!(take.clips.len(), ids.len());
         for clip in &take.clips {
             println!(

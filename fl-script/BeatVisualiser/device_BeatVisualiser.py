@@ -7,9 +7,16 @@
 #
 #   note 60 (note-on, velocity > 0)  ->  play
 #   note 61 (note-on, velocity > 0)  ->  stop
+#   note 62 (note-on, velocity > 0)  ->  ping: answer with note 62 back
 #   note 63 (note-on, velocity > 0)  ->  rewind to the song start
+#   CC 20/21/22                      ->  store a song position in ms, 7 bits
+#                                        each (low, middle, high)
+#   note 64 (note-on, velocity > 0)  ->  jump to that stored position
 #
-# Play and rewind first switch FL to song mode if it is in pattern mode,
+# The ping answer goes out on FL's MIDI output that has the same port number
+# as this script's input. The app listens there ("Test connection").
+#
+# Play, rewind and jump first switch FL to song mode if it is in pattern mode,
 # so a take always plays the song, never just the selected pattern.
 #
 # Everything is on MIDI channel 1. See fl-script/README.md for the protocol
@@ -18,6 +25,7 @@
 # FL Studio runs this file with its own embedded Python. Only FL's modules
 # (transport, midi, ...) and plain Python are available, no pip packages.
 
+import device
 import midi
 import transport
 
@@ -25,8 +33,13 @@ import transport
 CHANNEL = 0  # MIDI channel 1. In the status byte, channels are counted from 0.
 NOTE_PLAY = 60
 NOTE_STOP = 61
-# NOTE_PING = 62 is reserved for a future "Test connection" message.
+NOTE_PING = 62
 NOTE_REWIND = 63
+NOTE_JUMP = 64
+CC_POSITION = 20  # 20, 21, 22: the low, middle and high 7 bits of the position
+
+# The position for the next jump, as the three 7-bit parts that came in.
+position_parts = [0, 0, 0]
 
 # Values returned by transport.getLoopMode().
 LOOP_MODE_PATTERN = 0
@@ -37,6 +50,17 @@ def OnInit():
     # Called when FL loads the script (FL start, choosing the script in
     # MIDI settings, or "Reload script").
     print('Beat Visualiser script loaded')
+    # isAssigned(): an output port with the same port number exists.
+    # Without it the app's "Test connection" never gets an answer.
+    if not device.isAssigned():
+        print('Beat Visualiser: no MIDI output linked. In MIDI settings, give the '
+              '"Beat Visualiser" output the same port number as the input.')
+
+
+def answer_ping():
+    # One MIDI message packed into an int: status | data1 << 8 | data2 << 16.
+    # Note-on, channel 1, note 62, velocity 127.
+    device.midiOutMsg(midi.MIDI_NOTEON + CHANNEL + (NOTE_PING << 8) + (127 << 16))
 
 
 def ensure_song_mode():
@@ -62,8 +86,18 @@ def OnMidiMsg(event):
     message_type = event.status & 0xF0
     channel = event.status & 0x0F
 
-    # Only note-ons on our channel do anything.
-    if message_type != midi.MIDI_NOTEON or channel != CHANNEL:
+    if channel != CHANNEL:
+        return
+
+    # A jump's position arrives first, as three control changes.
+    if message_type == midi.MIDI_CONTROLCHANGE:
+        part = event.data1 - CC_POSITION
+        if 0 <= part < 3:
+            position_parts[part] = event.data2
+        return
+
+    # Everything else is a note-on.
+    if message_type != midi.MIDI_NOTEON:
         return
 
     # A note-on with velocity 0 means note-off in MIDI. Ignore it.
@@ -86,6 +120,9 @@ def OnMidiMsg(event):
     elif note == NOTE_STOP:
         transport.stop()
         print('Beat Visualiser: stop')
+    elif note == NOTE_PING:
+        answer_ping()
+        print('Beat Visualiser: ping')
     elif note == NOTE_REWIND:
         # Switch to song mode first. FL keeps a separate position for
         # pattern and song mode, so setSongPos must run after the switch,
@@ -95,3 +132,10 @@ def OnMidiMsg(event):
         # length (0.0 = start, 1.0 = end) and needs a float, hence 0.0.
         transport.setSongPos(0.0)
         print('Beat Visualiser: rewind')
+    elif note == NOTE_JUMP:
+        ms = position_parts[0] + (position_parts[1] << 7) + (position_parts[2] << 14)
+        # Same order as rewind: song mode first, then the position.
+        ensure_song_mode()
+        # With a mode argument, setSongPos takes the position in that unit.
+        transport.setSongPos(ms, midi.SONGLENGTH_MS)
+        print('Beat Visualiser: jump to ' + str(ms) + ' ms')

@@ -3,12 +3,21 @@
 //
 // Protocol (shared with fl-script/, don't change one side only):
 //   channel 1, note-on then note-off
-//   note 60 = play, note 61 = stop, note 62 = reserved (ping, later),
-//   note 63 = rewind to the song start
+//   note 60 = play, note 61 = stop, note 62 = ping, note 63 = rewind to the
+//   song start, note 64 = jump to the position sent just before it as three
+//   control changes (CC 20/21/22 = bits 0-6/7-13/14-20 of the position in ms,
+//   because a MIDI data byte only holds 7 bits)
+//
+// The other direction: the app also creates a virtual MIDI input with the
+// same name, which FL sees as an output device. The script answers a ping
+// by sending note 62 back on it. That's how "Test connection" knows FL is
+// really listening. FL only sends to that output when, in its MIDI settings,
+// the output has the same port number as the script's input.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use midir::MidiOutputConnection;
+use midir::{MidiInputConnection, MidiOutputConnection};
 
 // FL remembers its MIDI settings by port name, so keep this exact name.
 pub const PORT_NAME: &str = "Beat Visualiser";
@@ -19,7 +28,24 @@ const NOTE_OFF: u8 = 0x80;
 
 const NOTE_PLAY: u8 = 60;
 const NOTE_STOP: u8 = 61;
+const NOTE_PING: u8 = 62;
 const NOTE_REWIND: u8 = 63;
+const NOTE_JUMP: u8 = 64;
+const CONTROL_CHANGE: u8 = 0xB0;
+const CC_POSITION: u8 = 20; // 20, 21, 22: low, middle, high 7 bits
+
+/// The latest position a jump can reach: 21 bits of milliseconds, ~35 minutes.
+pub const MAX_JUMP_MS: u32 = (1 << 21) - 1;
+
+// How long "Test connection" waits for FL's answer. FL answers within a few
+// ms when it's set up; the rest is slack for a busy FL (loading a project).
+const PING_TIMEOUT: Duration = Duration::from_millis(1500);
+
+// Shown when FL doesn't answer a ping. Covers every reason we can't tell
+// apart from here.
+pub const NO_ANSWER: &str = "FL Studio didn't answer. Check that FL is open, and that in \
+    Options > MIDI settings both the \"Beat Visualiser\" input (controller type \"Beat \
+    Visualiser\") and the \"Beat Visualiser\" output are enabled with the same port number.";
 
 // The MIDI connection to FL, kept in Tauri "managed state" (see lib.rs).
 //
@@ -38,7 +64,7 @@ pub struct FlPort(pub Mutex<Result<MidiOutputConnection, String>>);
 /// Holds the lock only for the send itself, a few microseconds.
 pub fn send_to_fl(
     port: &FlPort,
-    send: fn(&mut MidiOutputConnection) -> Result<(), String>,
+    send: impl FnOnce(&mut MidiOutputConnection) -> Result<(), String>,
 ) -> Result<(), String> {
     // lock() only fails if another thread panicked while holding the lock.
     let mut guard = port
@@ -88,6 +114,10 @@ pub fn create_port(name: &str) -> Result<MidiOutputConnection, String> {
     ))
 }
 
+pub fn send_ping(conn: &mut MidiOutputConnection) -> Result<(), String> {
+    send_note(conn, NOTE_PING)
+}
+
 pub fn send_play(conn: &mut MidiOutputConnection) -> Result<(), String> {
     send_note(conn, NOTE_PLAY)
 }
@@ -97,8 +127,135 @@ pub fn send_stop(conn: &mut MidiOutputConnection) -> Result<(), String> {
 }
 
 // Moves FL's playhead to the start of the song (doesn't start playing).
+// Kept for the protocol and its test; takes use send_jump.
+#[allow(dead_code)]
 pub fn send_rewind(conn: &mut MidiOutputConnection) -> Result<(), String> {
     send_note(conn, NOTE_REWIND)
+}
+
+/// Moves FL's playhead to `ms` milliseconds into the song (doesn't start
+/// playing). The script also switches FL to song mode.
+pub fn send_jump(conn: &mut MidiOutputConnection, ms: u32) -> Result<(), String> {
+    if ms > MAX_JUMP_MS {
+        return Err(format!(
+            "Can't jump to {ms} ms, the latest is {MAX_JUMP_MS} ms."
+        ));
+    }
+    for (i, part) in position_parts(ms).iter().enumerate() {
+        conn.send(&[CONTROL_CHANGE, CC_POSITION + i as u8, *part])
+            .map_err(|e| format!("Could not send the song position: {e}"))?;
+    }
+    send_note(conn, NOTE_JUMP)
+}
+
+// ms split into three 7-bit parts, lowest first.
+fn position_parts(ms: u32) -> [u8; 3] {
+    [
+        (ms & 0x7F) as u8,
+        ((ms >> 7) & 0x7F) as u8,
+        ((ms >> 14) & 0x7F) as u8,
+    ]
+}
+
+// Listens for FL's answers on a virtual MIDI input, kept in managed state
+// next to FlPort for the whole app run (FL only sees the port while it
+// exists). The callback runs on midir's own thread and only stores WHEN the
+// last ping answer arrived; ping() reads that.
+pub struct FlListener {
+    // Keeps the port alive; never read. Mutex: managed state must be Sync.
+    _connection: Mutex<Option<MidiInputConnection<()>>>,
+    startup_error: Option<String>,
+    last_pong: Arc<Mutex<Option<Instant>>>,
+}
+
+impl FlListener {
+    /// Ok if the input port was created at startup, otherwise the reason.
+    pub fn check(&self) -> Result<(), String> {
+        match &self.startup_error {
+            None => Ok(()),
+            Some(e) => Err(format!("No MIDI input: {e}")),
+        }
+    }
+}
+
+// FL's answer to a ping: note-on 62 with a velocity above 0, any channel.
+fn is_pong(message: &[u8]) -> bool {
+    message.len() >= 3 && message[0] & 0xF0 == NOTE_ON && message[1] == NOTE_PING && message[2] > 0
+}
+
+#[cfg(target_os = "macos")]
+pub fn create_listener(name: &str) -> FlListener {
+    use midir::os::unix::VirtualInput;
+
+    let last_pong = Arc::new(Mutex::new(None));
+    // The callback gets its own handle to the same Mutex (Arc = shared ownership).
+    let pong_writer = Arc::clone(&last_pong);
+    let result = midir::MidiInput::new(name)
+        .map_err(|e| format!("Could not start MIDI input: {e}"))
+        .and_then(|input| {
+            input
+                .create_virtual(
+                    name,
+                    move |_time, message, _| {
+                        if is_pong(message)
+                            && let Ok(mut last) = pong_writer.lock()
+                        {
+                            *last = Some(Instant::now());
+                        }
+                    },
+                    (),
+                )
+                .map_err(|e| format!("Could not create the virtual MIDI input \"{name}\": {e}"))
+        });
+    match result {
+        Ok(connection) => FlListener {
+            _connection: Mutex::new(Some(connection)),
+            startup_error: None,
+            last_pong,
+        },
+        Err(e) => FlListener {
+            _connection: Mutex::new(None),
+            startup_error: Some(e),
+            last_pong,
+        },
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn create_listener(name: &str) -> FlListener {
+    FlListener {
+        _connection: Mutex::new(None),
+        startup_error: Some(format!(
+            "Can't create the MIDI input \"{name}\": virtual MIDI ports only work on macOS so far."
+        )),
+        last_pong: Arc::new(Mutex::new(None)),
+    }
+}
+
+/// Sends a ping and waits for FL's answer. Ok(round trip time) if FL
+/// answered, otherwise an error that says what to check. Blocks for up to
+/// PING_TIMEOUT, so call it from a background thread.
+pub fn ping(port: &FlPort, listener: &FlListener) -> Result<Duration, String> {
+    listener.check()?;
+    let sent = Instant::now();
+    send_to_fl(port, send_ping)?;
+    let deadline = sent + PING_TIMEOUT;
+    loop {
+        let last = *listener
+            .last_pong
+            .lock()
+            .map_err(|_| "MIDI input is unusable after an earlier crash.".to_string())?;
+        // Only an answer that arrived after THIS ping counts.
+        if let Some(at) = last
+            && at >= sent
+        {
+            return Ok(at - sent);
+        }
+        if Instant::now() >= deadline {
+            return Err(NO_ANSWER.to_string());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 // A short "key press": note-on with full velocity, then note-off.
@@ -167,5 +324,51 @@ mod tests {
                 vec![0x80, 63, 0],
             ]
         );
+    }
+
+    // Plays FL's part: connects to our virtual input and answers the ping.
+    #[test]
+    fn ping_gets_an_answer_through_the_virtual_input() {
+        let name = format!("Beat Visualiser Ping Test {}", std::process::id());
+        let port = FlPort(Mutex::new(create_port(&name)));
+        let listener = create_listener(&name);
+        listener.check().unwrap();
+
+        // "FL": an output connected to our virtual input, answering right away.
+        let output = midir::MidiOutput::new("Fake FL").unwrap();
+        let target = output
+            .ports()
+            .into_iter()
+            .find(|p| output.port_name(p).ok().as_deref() == Some(name.as_str()))
+            .expect("virtual input not found in the MIDI output list");
+        let mut fake_fl = output.connect(&target, "fake fl").unwrap();
+        let answer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            fake_fl.send(&[0x90, 62, 127]).unwrap();
+        });
+
+        let round_trip = ping(&port, &listener).expect("no answer");
+        answer.join().unwrap();
+        assert!(round_trip < PING_TIMEOUT);
+    }
+
+    #[test]
+    fn positions_split_into_7_bit_parts() {
+        assert_eq!(position_parts(0), [0, 0, 0]);
+        assert_eq!(position_parts(127), [127, 0, 0]);
+        assert_eq!(position_parts(128), [0, 1, 0]);
+        // 83 s = 83000 ms = 5 * 16384 + 8 * 128 + 56
+        assert_eq!(position_parts(83_000), [56, 8, 5]);
+        let [a, b, c] = position_parts(MAX_JUMP_MS);
+        assert_eq!((a, b, c), (127, 127, 127));
+    }
+
+    #[test]
+    fn pong_is_note_on_62() {
+        assert!(is_pong(&[0x90, 62, 127]));
+        assert!(is_pong(&[0x93, 62, 1])); // any channel
+        assert!(!is_pong(&[0x90, 62, 0])); // velocity 0 = note-off
+        assert!(!is_pong(&[0x80, 62, 64]));
+        assert!(!is_pong(&[0x90, 60, 127]));
     }
 }

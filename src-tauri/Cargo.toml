@@ -30,6 +30,7 @@ tauri-plugin-log = "2"
 # Windows (CoreMIDI / WinMM); only its virtual-port feature is macOS-only,
 # and that part is gated with #[cfg] in fl_midi.rs.
 midir = "0.11.1"
+tauri-plugin-dialog = "2"
 
 # macOS only: ScreenCaptureKit (list and later capture windows) and
 # CoreGraphics (check the Screen Recording permission). The macos_15_0

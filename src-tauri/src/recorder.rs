@@ -146,7 +146,7 @@ impl Recording {
             &filter,
             &config,
             StreamCallbacks::new().on_error(move |e| {
-                *stream_error.lock().unwrap() = Some(format!("Capture stopped: {e}"));
+                *stream_error.lock().unwrap() = Some(format!("Recording stopped: the window was closed or hidden ({e}). Click \"List windows\" and try again."));
             }),
         )
         .map_err(|e| format!("Could not create capture stream: {e}"))?;

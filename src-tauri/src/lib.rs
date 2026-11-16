@@ -1,6 +1,8 @@
 mod audio_file;
 mod export_file;
 mod fl_midi;
+mod fl_script;
+mod permission;
 mod recorder;
 mod recordings;
 mod take;
@@ -8,7 +10,7 @@ mod window_list;
 
 use std::sync::Mutex;
 
-use fl_midi::{FlPort, send_to_fl};
+use fl_midi::{FlListener, FlPort, send_to_fl};
 use tauri::Manager; // gives `app.path()`, `app.manage()` and `app.state()`
 
 // Not `async`, so Tauri runs these on the main thread. That's fine here:
@@ -32,10 +34,10 @@ async fn list_windows(
     window_list::list_windows(title_filter)
 }
 
-// The one-button take: FL plays from the song start while we record 1 to 3
-// windows for `seconds`, then FL stops. Returns one clip (file + play
-// offset) per window, in the same order as `window_ids` (see take.rs).
-// JS: invoke('record_take', { windowIds, seconds })
+// The one-button take: FL plays from `start_seconds` into the song while we
+// record 1 to 3 windows for `seconds`, then FL stops. Returns one clip (file
+// + play offset) per window, in the same order as `window_ids` (see take.rs).
+// JS: invoke('record_take', { windowIds, startSeconds, seconds })
 //
 // The take blocks for the whole duration, so it runs on a separate
 // "blocking" thread (spawn_blocking). That keeps both the UI thread and
@@ -44,7 +46,8 @@ async fn list_windows(
 async fn record_take(
     app: tauri::AppHandle,
     window_ids: Vec<u32>,
-    seconds: u32,
+    start_seconds: f64,
+    seconds: f64,
 ) -> Result<take::Take, String> {
     let folder = recordings_folder(&app)?;
 
@@ -53,7 +56,15 @@ async fn record_take(
     // in managed state, like a command's `State` argument would.
     tauri::async_runtime::spawn_blocking(move || {
         let port = app.state::<FlPort>();
-        take::record_take(&port, &window_ids, seconds, &folder)
+        let listener = app.state::<FlListener>();
+        take::record_take(
+            &port,
+            &listener,
+            &window_ids,
+            start_seconds,
+            seconds,
+            &folder,
+        )
     })
     .await
     .map_err(|e| format!("Recording thread crashed: {e}"))?
@@ -106,9 +117,140 @@ fn show_in_folder(app: tauri::AppHandle, path: String) -> Result<(), String> {
     export_file::show_in_folder(&folder, std::path::Path::new(&path))
 }
 
+// --- Setup (onboarding) ---
+
+// Everything the setup screen checks, in one call.
+#[derive(serde::Serialize)]
+struct SetupStatus {
+    script: fl_script::ScriptStatus,
+    /// Why the MIDI ports couldn't be created, None = both are there.
+    midi_error: Option<String>,
+    screen_permission: bool,
+    platform: &'static str, // "macos" or "windows"
+}
+
+#[tauri::command]
+fn setup_status(
+    app: tauri::AppHandle,
+    port: tauri::State<'_, FlPort>,
+    listener: tauri::State<'_, FlListener>,
+) -> SetupStatus {
+    let hardware = fl_hardware_folder(&app);
+    let midi_error = fl_midi::check_port(&port)
+        .and_then(|_| listener.check())
+        .err();
+    SetupStatus {
+        script: fl_script::status(hardware.as_deref()),
+        midi_error,
+        screen_permission: permission::granted(),
+        platform: if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "windows"
+        },
+    }
+}
+
+// Copies the FL script into FL's Settings/Hardware folder. `picked`: a folder
+// the user chose because FL's data folder isn't in the default place; it's
+// remembered for next time.
+// JS: invoke('install_fl_script', { picked: '/path' | null })
+#[tauri::command]
+fn install_fl_script(
+    app: tauri::AppHandle,
+    picked: Option<String>,
+) -> Result<fl_script::ScriptStatus, String> {
+    let hardware = match picked {
+        Some(picked) => {
+            let hardware = fl_script::hardware_folder_from_pick(std::path::Path::new(&picked));
+            if !fl_script::looks_like_fl(&hardware) {
+                return Err(format!(
+                    "{picked} doesn't look like FL Studio's data folder (there's no Settings \
+                     folder in it). Pick the folder called \"FL Studio\", by default in \
+                     Documents/Image-Line."
+                ));
+            }
+            save_fl_hardware_folder(&app, &hardware)?;
+            hardware
+        }
+        None => fl_hardware_folder(&app)
+            .ok_or("Couldn't find FL Studio's data folder. Choose it with \"Choose folder\".")?,
+    };
+    fl_script::install(&hardware)?;
+    log::info!("Installed the FL script in {}", hardware.display());
+    Ok(fl_script::status(Some(&hardware)))
+}
+
+// The file that remembers a folder the user picked.
+fn fl_folder_setting(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let dir = app.path().app_config_dir().ok()?;
+    Some(dir.join("fl-hardware-folder.txt"))
+}
+
+fn save_fl_hardware_folder(
+    app: &tauri::AppHandle,
+    hardware: &std::path::Path,
+) -> Result<(), String> {
+    let file = fl_folder_setting(app).ok_or("Could not find the app's settings folder.")?;
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("Could not save the setting: {e}"))?;
+    }
+    std::fs::write(&file, hardware.to_string_lossy().as_bytes())
+        .map_err(|e| format!("Could not save the setting: {e}"))
+}
+
+// FL's Settings/Hardware folder: the one the user picked earlier if it's
+// still valid, otherwise the default one if FL's data folder is there.
+fn fl_hardware_folder(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let saved = fl_folder_setting(app)
+        .and_then(|file| std::fs::read_to_string(file).ok())
+        .map(|text| std::path::PathBuf::from(text.trim()));
+    if let Some(saved) = saved
+        && fl_script::looks_like_fl(&saved)
+    {
+        return Some(saved);
+    }
+    let documents = app.path().document_dir().ok()?;
+    let default = fl_script::default_hardware_folder(&documents);
+    fl_script::looks_like_fl(&default).then_some(default)
+}
+
+// "Test connection": pings the FL script and waits for its answer (up to
+// 1.5 s, on a blocking thread). Returns the round trip in milliseconds.
+#[tauri::command]
+async fn fl_ping(app: tauri::AppHandle) -> Result<u32, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let port = app.state::<FlPort>();
+        let listener = app.state::<FlListener>();
+        fl_midi::ping(&port, &listener).map(|d| d.as_millis() as u32)
+    })
+    .await
+    .map_err(|e| format!("Connection test crashed: {e}"))?
+}
+
+// Shows the macOS permission prompt (only the first time). Returns whether
+// the permission is granted now.
+#[tauri::command]
+fn request_screen_permission() -> bool {
+    permission::request()
+}
+
+#[tauri::command]
+fn open_screen_permission_settings() -> Result<(), String> {
+    permission::open_settings()
+}
+
+// macOS only applies a newly granted Screen Recording permission after a restart.
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    app.restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Native "choose folder" dialog, for FL's data folder in setup
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -128,6 +270,14 @@ pub fn run() {
             }
             app.manage(FlPort(Mutex::new(port)));
 
+            // The input FL answers on (for "Test connection"). Same name, so
+            // in FL's MIDI settings both are called "Beat Visualiser".
+            let listener = fl_midi::create_listener(fl_midi::PORT_NAME);
+            if let Err(e) = listener.check() {
+                log::error!("{e}");
+            }
+            app.manage(listener);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -136,6 +286,12 @@ pub fn run() {
             latest_recording,
             fl_play,
             fl_stop,
+            fl_ping,
+            setup_status,
+            install_fl_script,
+            request_screen_permission,
+            open_screen_permission_settings,
+            restart_app,
             save_export,
             show_in_folder,
             audio_file::read_audio_file
