@@ -8,6 +8,22 @@
   import Waveform from './Waveform.svelte'
   import Preview from './Preview.svelte'
   import ParamControls from './ParamControls.svelte'
+  import Step from './Step.svelte'
+  import Segmented from './Segmented.svelte'
+  import Setup from './Setup.svelte'
+  import { onMount } from 'svelte'
+  import { setupComplete, type SetupStatus } from './setup-status'
+  import type { Connection } from './connection'
+  import { EMPTY_TITLE, type TitleText } from '../engine/overlay/title-card'
+  import {
+    barNumber,
+    barSeconds,
+    parseBpm,
+    sectionLength,
+    snapStart,
+  } from '../engine/analysis/bars'
+  import { computeHighlightScore } from '../engine/analysis/features'
+  import { pickSection } from '../engine/analysis/pick-section'
   import type { BeatFile } from './beat-file'
   import { decodeAudio, type DecodedAudio } from '../engine/audio/decode'
   import { createPlayer, type Player } from '../engine/audio/player'
@@ -72,6 +88,10 @@
 
   async function onBeatFile(file: BeatFile) {
     beat = file
+    // The title card starts with the beat's name; the user can change it.
+    title.name = nameFromFile(file.name)
+    // A new beat gets its own auto-picked section.
+    movedStart = null
     // A new beat stops the old one right away. Clearing `decoded` and `player`
     // also removes the old <Waveform>.
     clearPlayback()
@@ -94,16 +114,50 @@
     }
   }
 
-  // The preview's playback clock. The player's time is seconds into the
-  // buffer; the frame source's clip starts at second 0 of the buffer
-  // (SECTION_START), so they line up.
-  // Called by the preview's frame loop; reading `player` there is a plain read.
-  function getPlaybackTime(): number {
-    return player ? player.getTime() : 0
+  // One line under the beat's name: "3:12 · 44.1 kHz · stereo · 8.4 MB".
+  let beatMeta = $derived.by(() => {
+    if (!beat) return ''
+    const size = `${(beat.bytes.byteLength / (1024 * 1024)).toFixed(1)} MB`
+    if (!decoded) return decoding ? `${size} · decoding…` : size
+    const channels =
+      decoded.channels === 1
+        ? 'mono'
+        : decoded.channels === 2
+          ? 'stereo'
+          : `${decoded.channels} ch`
+    return `${formatTime(decoded.duration)} · ${decoded.sampleRate / 1000} kHz · ${channels} · ${size}`
+  })
+
+  // "night_drive_140.wav" -> "night drive 140"
+  function nameFromFile(file: string): string {
+    return file
+      .replace(/\.[^.]+$/, '')
+      .replace(/_+/g, ' ')
+      .trim()
   }
 
+  // The title card's text (beat name, BPM, key, producer tag), drawn over
+  // every theme. Plain $state: the fields are bound to inputs one by one,
+  // and the preview reads it every frame (a plain property read).
+  let title = $state<TitleText>({ ...EMPTY_TITLE })
+
+  // The preview's playback clock: seconds into the SECTION (the frame
+  // source and the plugin clips count from the section start). The player
+  // plays the whole beat, so outside the section the preview holds its
+  // first or last frame.
+  // Called by the preview's frame loop; reading `player` and the section
+  // there is a plain read.
+  function getPlaybackTime(): number {
+    if (!player) return 0
+    const t = player.getTime() - sectionStart
+    return Math.min(Math.max(t, 0), takeSeconds)
+  }
+
+  // Playing, and inside the section (so the plugin videos only run there).
   function isBeatPlaying(): boolean {
-    return player ? player.isPlaying() : false
+    if (!player || !player.isPlaying()) return false
+    const t = player.getTime() - sectionStart
+    return t >= 0 && t < takeSeconds
   }
 
   // One loaded plugin recording: the clip plus what the UI shows about it.
@@ -165,7 +219,7 @@
       const result = await syncTakeToBeat(
         convertFileSrc(path),
         decoded.buffer,
-        SECTION_START,
+        sectionStart,
         estimate,
         request.searchSeconds,
       )
@@ -294,6 +348,19 @@
     params = defaultParams(v.params)
   }
 
+  // Whole seconds as m:ss, e.g. 75 -> "1:15". For labels; formatTime (with
+  // tenths) is for the waveform's running clock.
+  function clockTime(seconds: number): string {
+    const s = Math.floor(seconds)
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+  }
+
+  // "1 plugin window" etc., shown on each theme card.
+  function slotLabel(slots: number): string {
+    if (slots === 0) return 'No plugin window'
+    return slots === 1 ? '1 plugin window' : `${slots} plugin windows`
+  }
+
   // The recordings the current theme shows: the first pluginSlots of them.
   // A theme with fewer slots just ignores the rest (they stay loaded, so
   // switching back shows them again).
@@ -305,6 +372,8 @@
   let titleFilter = $state('Ogun')
   let windows = $state<WindowInfo[]>([])
   let windowsError = $state('')
+  // True after the first "List windows", so an empty list can say "no match".
+  let windowsListed = $state(false)
   // The plugin windows to record, in slot order: [0] is slot 1 (top).
   // Ids from list_windows.
   let selectedWindowIds = $state<number[]>([])
@@ -335,6 +404,7 @@
 
   async function listWindows() {
     windowsError = ''
+    windowsListed = true
     try {
       // Tauri maps the camelCase key `titleFilter` to the Rust arg `title_filter`.
       windows = await invoke<WindowInfo[]>('list_windows', { titleFilter })
@@ -348,19 +418,54 @@
     )
   }
 
-  // Take length in seconds. The spec lengths; the take is capped to the beat.
+  // --- The section: which part of the beat is recorded and exported ---
+
+  // The chosen length. The real one is a whole number of bars (below).
   const LENGTHS = [15, 30, 60]
   let length = $state(15)
-  // What we really record: the chosen length, but never longer than the beat.
+
+  // The tempo the user typed; null = empty or not a tempo. With it, the
+  // section is cut on bars (engine/analysis/bars.ts).
+  let bpm = $derived(parseBpm(title.bpm))
+
+  // What we really record: a whole number of bars (multiple of 4) with a
+  // BPM, whole seconds without; never longer than the chosen length or the beat.
   let takeSeconds = $derived(
-    decoded
-      ? Math.max(1, Math.min(length, Math.floor(decoded.duration)))
-      : length,
+    decoded ? sectionLength(length, bpm, decoded.duration) : length,
   )
 
-  // The clip that is recorded, previewed and exported: from the beat's start,
-  // takeSeconds long. Phase 4 (highlight detection) will move the start.
-  const SECTION_START = 0
+  // How "big" each moment of the beat is, once per beat (features.ts).
+  // Recomputed only when `decoded` changes. ($derived values are never
+  // wrapped in a proxy, so the big typed array stays as it is.)
+  let highlight = $derived(
+    decoded ? computeHighlightScore(decoded.buffer) : null,
+  )
+
+  // The strongest section (pick-section.ts): on a bar, away from intro/outro.
+  let autoStart = $derived(
+    decoded && highlight
+      ? pickSection(highlight, decoded.duration, takeSeconds, bpm)
+      : 0,
+  )
+
+  // Where the user dragged the section; null = use the auto-pick. Kept
+  // unsnapped, so it re-snaps when the BPM or length changes.
+  let movedStart = $state<number | null>(null)
+
+  // The section start in seconds: the user's spot snapped to a bar, or the
+  // auto-pick. The take, preview, sync and export all use it.
+  let sectionStart = $derived(
+    decoded && movedStart !== null
+      ? snapStart(movedStart, takeSeconds, decoded.duration, bpm)
+      : autoStart,
+  )
+
+  // "bars 33–40" with a BPM, otherwise the time range.
+  let sectionLabel = $derived(
+    bpm === null
+      ? `${clockTime(sectionStart)} – ${clockTime(sectionStart + takeSeconds)}`
+      : `bars ${barNumber(sectionStart, bpm)}–${barNumber(sectionStart + takeSeconds, bpm) - 1}`,
+  )
 
   // Per-frame values (levels, peaks, progress) for the themes, for exactly
   // that section, so the preview's waveform and playhead match the export.
@@ -370,8 +475,8 @@
     decoded
       ? createFrameSource(
           decoded.buffer,
-          SECTION_START,
-          SECTION_START + takeSeconds,
+          sectionStart,
+          sectionStart + takeSeconds,
         )
       : null,
   )
@@ -410,6 +515,7 @@
       // In slot order; take.clips comes back in the same order.
       const take = await invoke<Take>('record_take', {
         windowIds: usedWindowIds,
+        startSeconds: sectionStart,
         seconds,
       })
       // FL starts a little after we send play; the audio sync finds the
@@ -421,11 +527,18 @@
       }))
       if (await loadRecordings(items)) {
         // Back to the start, so Play shows the take from its first beat.
-        player?.seek(0)
-        takeStatus = 'Done — press Play to preview'
+        player?.seek(sectionStart)
+        takeStatus = 'Recorded. Press Play to preview it'
       }
     } catch (e) {
       takeError = String(e)
+      // FL didn't answer the ping before the take: show it in the top bar too.
+      if (takeError.includes("didn't answer")) {
+        connection = { state: 'fail', message: takeError }
+      }
+      // A picked window is gone or hidden: refresh the list, so the user
+      // sees what's still there.
+      if (/window/i.test(takeError)) listWindows()
     } finally {
       clearInterval(timer)
       recording = false
@@ -470,9 +583,10 @@
     const options = {
       // $state.snapshot: a plain object instead of the reactive proxy
       params: $state.snapshot(params),
+      title: $state.snapshot(title),
       frameSource,
       audio: decoded.buffer,
-      sectionStart: SECTION_START,
+      sectionStart,
       length: takeSeconds,
       fps: exportFps,
       plugins: shownRecordings.map((r) => ({
@@ -482,9 +596,9 @@
     }
 
     try {
-      const bytes = await preview.withRenderer((ctx, visualizer) =>
+      const bytes = await preview.withRenderer((ctx, visualizer, titleCard) =>
         exportVideo(
-          { ...options, ctx, visualizer },
+          { ...options, ctx, visualizer, titleCard },
           (p) => (exportProgress = p),
           abort.signal,
         ),
@@ -515,6 +629,59 @@
     }
   }
 
+  // --- Setup and the FL connection ---
+
+  let setupOpen = $state(false)
+  let connection = $state<Connection>({ state: 'unknown', message: '' })
+
+  // "Test connection": FL's script answers a ping over MIDI.
+  async function testConnection() {
+    connection = { state: 'checking', message: '' }
+    try {
+      const ms = await invoke<number>('fl_ping')
+      connection = { state: 'ok', message: `FL Studio answered in ${ms} ms` }
+    } catch (e) {
+      connection = { state: 'fail', message: String(e) }
+    }
+  }
+
+  // Remembered in this browser profile (the app's webview): setup was
+  // finished once. Wrapped in try: storage can be unavailable.
+  const SETUP_DONE_KEY = 'setup-done'
+  function setupSeen(): boolean {
+    try {
+      return localStorage.getItem(SETUP_DONE_KEY) === '1'
+    } catch {
+      return false
+    }
+  }
+  function closeSetup() {
+    setupOpen = false
+    try {
+      localStorage.setItem(SETUP_DONE_KEY, '1')
+    } catch {
+      // not remembered; setup shows again next launch
+    }
+  }
+
+  // On launch: copy a missing or outdated FL script right away (an app
+  // update brings a new script), then open setup if this is the first run
+  // or something is missing.
+  onMount(async () => {
+    try {
+      let status = await invoke<SetupStatus>('setup_status')
+      const script = status.script
+      if (script.hardware_folder && !script.up_to_date) {
+        await invoke('install_fl_script', { picked: null })
+        status = await invoke<SetupStatus>('setup_status')
+      }
+      if (!setupSeen() || !setupComplete(status)) setupOpen = true
+    } catch (e) {
+      // Not inside the app (e.g. `npm run dev` in a browser): no setup.
+      console.warn('Setup check failed:', e)
+    }
+  })
+
   // Debug: last FL command result, e.g. "Sent play" or the error from Rust.
   let flStatus = $state('')
 
@@ -528,53 +695,185 @@
   }
 </script>
 
-<main class="min-h-screen bg-zinc-900 p-6 text-zinc-200">
-  <h1 class="mb-4 text-2xl font-bold text-sky-400">Beat Visualiser</h1>
+<div class="flex min-h-screen flex-col">
+  <!-- Top bar: the app name, and what's happening right now. -->
+  <header
+    class="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-surface px-6"
+  >
+    <span class="text-base font-semibold">Beat Visualiser</span>
+    <div class="ml-auto flex items-center gap-2">
+      <!-- FL connection: click to test it again -->
+      <button
+        class="inline-flex h-7 items-center gap-2 rounded-lg border border-line px-3 text-xs text-soft transition-colors duration-150 ease-out hover:bg-raised hover:text-fg disabled:opacity-60"
+        onclick={testConnection}
+        disabled={connection.state === 'checking' || recording}
+        title={connection.message || 'Test the connection to FL Studio'}
+      >
+        <span
+          class={[
+            'size-2 rounded-full',
+            connection.state === 'ok'
+              ? 'bg-good'
+              : connection.state === 'fail'
+                ? 'bg-bad'
+                : 'bg-line-strong',
+          ]}
+        ></span>
+        {connection.state === 'ok'
+          ? 'FL Studio connected'
+          : connection.state === 'fail'
+            ? 'FL Studio not answering'
+            : connection.state === 'checking'
+              ? 'Testing…'
+              : 'Test FL connection'}
+      </button>
+      <button
+        class="btn btn-ghost h-7 text-xs"
+        onclick={() => (setupOpen = true)}
+      >
+        Setup
+      </button>
+      {#if recording}
+        <span
+          class="inline-flex h-7 items-center gap-2 rounded-lg border border-line px-3 font-mono text-xs tabular-nums"
+        >
+          <span class="size-2 rounded-full bg-rec"></span>
+          Recording {recordingElapsed} / {Math.round(takeSeconds)} s
+        </span>
+      {:else if exporting}
+        <span
+          class="inline-flex h-7 items-center rounded-lg border border-line px-3 font-mono text-xs text-soft tabular-nums"
+        >
+          Exporting {Math.round(exportProgress * 100)}%
+        </span>
+      {/if}
+    </div>
+  </header>
 
   <!--
-    Two columns: controls on the left (takes the remaining width, minmax(0, 1fr)
-    lets it shrink below its content so long window titles don't push the
-    preview off screen), the preview on the right (as wide as it needs).
+    Two columns: the preview on the left (as wide as it needs), the steps on
+    the right (minmax(0, 1fr) lets them shrink, so long window titles
+    truncate instead of pushing the layout wider). Below lg they stack.
   -->
-  <div class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-8">
-    <div>
-      <section class="mb-6">
-        <h2 class="mb-2 font-semibold">1. Beat</h2>
-        <DropZone onfile={onBeatFile} disabled={exporting || recording} />
-        {#if beat}
-          <p class="mt-2 text-sm text-zinc-300">
-            {beat.name} · {(beat.bytes.byteLength / (1024 * 1024)).toFixed(1)} MB
-            {#if decoded}
-              · {formatTime(decoded.duration)} · {decoded.sampleRate / 1000} kHz ·
-              {decoded.channels === 1 ? 'mono' : `${decoded.channels} ch`}
-            {/if}
-          </p>
-        {/if}
-        {#if decoding}
-          <p class="mt-2 text-sm text-zinc-400">Decoding…</p>
-        {/if}
+  <main
+    class="mx-auto grid w-full max-w-[1440px] items-start gap-8 p-6 lg:grid-cols-[auto_minmax(0,1fr)]"
+  >
+    <!-- sticky: the preview stays in view while the steps scroll -->
+    <aside class="justify-self-center lg:sticky lg:top-6">
+      <Preview
+        bind:this={preview}
+        visualizer={theme}
+        {params}
+        {frameSource}
+        getTime={getPlaybackTime}
+        isPlaying={isBeatPlaying}
+        clips={shownClips}
+        {title}
+      />
+    </aside>
+
+    <div class="flex min-w-0 flex-col gap-4">
+      <Step n={1} title="Beat">
+        <DropZone
+          onfile={onBeatFile}
+          disabled={exporting || recording}
+          name={beat?.name ?? ''}
+          meta={beatMeta}
+        />
         {#if decodeError}
-          <p class="mt-2 text-red-400">{decodeError}</p>
+          <p class="text-sm text-bad">{decodeError}</p>
         {/if}
+      </Step>
+
+      <Step n={2} title="Section">
+        {#snippet aside()}
+          <span class="font-mono tabular-nums">
+            {clockTime(sectionStart)} – {clockTime(sectionStart + takeSeconds)}
+          </span>
+        {/snippet}
         {#if decoded && player}
-          <div class="mt-3">
-            <Waveform audio={decoded} {player} />
+          <Waveform
+            audio={decoded}
+            {player}
+            {sectionStart}
+            sectionLength={takeSeconds}
+            step={bpm === null ? 1 : barSeconds(bpm)}
+            label={sectionLabel}
+            onmove={(start) => (movedStart = start)}
+            disabled={recording || exporting}
+          />
+        {:else}
+          <div
+            class="grid h-24 place-items-center rounded-lg bg-raised text-xs text-muted"
+          >
+            {decoding ? 'Decoding…' : 'The waveform shows up once a beat is in'}
           </div>
         {/if}
-      </section>
+        <div class="flex flex-wrap items-center gap-3">
+          <Segmented
+            label="Length"
+            options={LENGTHS}
+            selected={length}
+            format={(s) => `${s} s`}
+            onselect={(s) => (length = s)}
+            disabled={recording || exporting}
+          />
+          <label class="flex items-center gap-2">
+            <span class="text-xs text-muted">BPM</span>
+            <input
+              class="field w-20 tabular-nums"
+              inputmode="decimal"
+              maxlength="6"
+              placeholder="140"
+              bind:value={title.bpm}
+              disabled={recording || exporting}
+            />
+          </label>
+          {#if movedStart !== null}
+            <button
+              class="btn btn-ghost"
+              onclick={() => (movedStart = null)}
+              disabled={recording || exporting}
+            >
+              Auto-pick again
+            </button>
+          {/if}
+        </div>
+        <p class="text-xs text-muted">
+          {#if !decoded}
+            The strongest part is picked for you once a beat is in.
+          {:else if bpm === null}
+            Type the BPM to cut the section on whole bars. Until then it’s {takeSeconds}
+            s, not snapped.
+          {:else}
+            {Math.round(takeSeconds / barSeconds(bpm))} bars ({takeSeconds.toFixed(
+              1,
+            )} s) at
+            {bpm} BPM, {movedStart === null
+              ? 'auto-picked: the loudest, busiest part away from the intro and outro.'
+              : 'moved by you, snapped to bars.'}
+            Bar 1 is the start of the file, as FL exports it.
+          {/if}
+        </p>
+      </Step>
 
-      <section class="mb-6">
-        <h2 class="mb-2 font-semibold">
-          2. Plugin windows (pick up to {pickerSlots}, in order top → bottom)
-        </h2>
-        <div class="mb-2 flex gap-2">
+      <Step n={3} title="Plugin windows" highlight>
+        {#snippet aside()}
+          <span class="tabular-nums">
+            {usedWindowIds.length} of {pickerSlots} picked
+          </span>
+        {/snippet}
+
+        <div class="flex gap-2">
           <input
-            class="rounded bg-zinc-800 px-2 py-1"
-            placeholder="Title contains (empty = all)"
+            class="field flex-1"
+            placeholder="Title contains, empty for all"
+            aria-label="Window title contains"
             bind:value={titleFilter}
+            onkeydown={(e) => e.key === 'Enter' && listWindows()}
           />
           <button
-            class="rounded bg-sky-600 px-3 py-1 hover:bg-sky-500 disabled:opacity-50"
+            class="btn btn-secondary"
             onclick={listWindows}
             disabled={recording || exporting}
           >
@@ -582,275 +881,332 @@
           </button>
         </div>
         {#if windowsError}
-          <p class="mb-2 text-sm text-red-400">{windowsError}</p>
+          <p class="text-sm text-bad">{windowsError}</p>
         {/if}
+
         <!--
           One button per window row. Clicking picks it for the next slot (the
-          badge shows the slot number, 1 = top) or unpicks it. Picked windows
+          circle shows the slot number, 1 = top) or unpicks it. Picked windows
           past the theme's slot count stay picked but greyed out: unused.
         -->
-        <ul class="space-y-1 font-mono text-sm">
-          {#each windows as w (w.id)}
-            {@const slot = slotOf(w.id)}
-            <li>
-              <button
-                type="button"
-                class={[
-                  'flex w-full items-center gap-2 rounded px-2 py-1 text-left disabled:cursor-not-allowed disabled:opacity-50',
-                  slot > 0 && slot <= pickerSlots
-                    ? 'bg-sky-800 text-white'
-                    : 'hover:bg-zinc-800',
-                  slot > pickerSlots && 'bg-zinc-800 text-zinc-400',
-                ]}
-                onclick={() => toggleWindow(w.id)}
-                disabled={!w.on_screen || recording}
-              >
-                <span
+        {#if windows.length > 0}
+          <ul
+            class="divide-y divide-line overflow-hidden rounded-xl border border-line"
+          >
+            {#each windows as w (w.id)}
+              {@const slot = slotOf(w.id)}
+              {@const used = slot > 0 && slot <= pickerSlots}
+              <li>
+                <button
+                  type="button"
                   class={[
-                    'w-5 shrink-0 rounded text-center',
-                    slot > 0 ? 'bg-sky-500 text-white' : 'bg-zinc-700',
+                    'flex h-11 w-full items-center gap-3 px-3 text-left text-sm transition-colors duration-150 ease-out disabled:cursor-not-allowed disabled:text-muted',
+                    used ? 'bg-raised' : 'hover:bg-raised/60',
                   ]}
+                  onclick={() => toggleWindow(w.id)}
+                  disabled={!w.on_screen || recording}
                 >
-                  {slot > 0 ? slot : ''}
-                </span>
-                <span class="truncate">
-                  {w.app_name} | {w.title} | {w.width}×{w.height}
-                </span>
-                {#if !w.on_screen}
-                  <span class="text-zinc-400">(off screen)</span>
-                {/if}
-                {#if slot > pickerSlots}
-                  <span class="shrink-0">(not used by this theme)</span>
-                {/if}
-                {#if w.is_fl}<span class="text-sky-300">FL</span>{/if}
-              </button>
-            </li>
-          {/each}
-        </ul>
-      </section>
-
-      <section class="mb-6">
-        <h2 class="mb-2 font-semibold">3. Length</h2>
-        <div class="flex items-center gap-2">
-          {#each LENGTHS as seconds (seconds)}
-            <button
-              class={[
-                'rounded px-3 py-1 disabled:opacity-50',
-                seconds === length
-                  ? 'bg-sky-600 text-white'
-                  : 'bg-zinc-700 hover:bg-zinc-600',
-              ]}
-              onclick={() => (length = seconds)}
-              disabled={recording || exporting}
-            >
-              {seconds} s
-            </button>
-          {/each}
-          {#if decoded && takeSeconds < length}
-            <span class="text-sm text-zinc-400">
-              The beat is shorter: records {takeSeconds} s
-            </span>
-          {/if}
-        </div>
-      </section>
-
-      <section class="mb-6">
-        <button
-          class="rounded-lg bg-red-700 px-6 py-3 text-lg font-bold hover:bg-red-600 disabled:opacity-50"
-          onclick={playAndRecord}
-          disabled={!canRecord}
-        >
-          Play & record
-        </button>
-        <p class="mt-2 text-sm text-zinc-400">
-          FL Studio: open the same beat, Song mode, MIDI script "Beat
-          Visualiser" enabled. After updating the script, click "Reload script"
-          in FL's Script output window.
+                  <span
+                    class={[
+                      'grid size-5 shrink-0 place-items-center rounded-full font-mono text-xs',
+                      used
+                        ? 'bg-accent font-semibold text-accent-ink'
+                        : 'border border-line-strong text-muted',
+                    ]}
+                  >
+                    {slot > 0 ? slot : ''}
+                  </span>
+                  <span class="min-w-0 flex-1 truncate">
+                    {w.title || 'Untitled'}
+                    <span class="text-muted">· {w.app_name}</span>
+                  </span>
+                  <span
+                    class="shrink-0 font-mono text-xs text-muted tabular-nums"
+                  >
+                    {#if !w.on_screen}
+                      off screen
+                    {:else if slot > pickerSlots}
+                      not used by {theme.name}
+                    {:else}
+                      {w.width} × {w.height}
+                    {/if}
+                  </span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {:else if windowsListed && !windowsError}
+          <p class="text-sm text-soft">
+            No windows match. Open the plugin in FL, detach it, then list again.
+          </p>
+        {/if}
+        <p class="text-xs text-muted">
+          {pickerSlots > 1
+            ? `Pick up to ${pickerSlots}, in order from top to bottom.`
+            : 'Pick one.'}
+          Plugin windows have to be detached in FL to show up here.
         </p>
-        {#if !decoded || usedWindowIds.length === 0}
-          <p class="mt-1 text-sm text-zinc-500">
-            Needs a beat and at least one picked plugin window.
-          </p>
-        {/if}
-        {#if recording}
-          <p class="mt-2 text-amber-400">
-            Recording… {recordingElapsed} / {takeSeconds} s
-          </p>
-        {/if}
-        {#if takeStatus}
-          <p class="mt-2 text-green-400">{takeStatus}</p>
-        {/if}
-        {#if takeError}
-          <p class="mt-2 text-red-400">{takeError}</p>
-        {/if}
-      </section>
 
-      <section class="mb-6">
-        <h2 class="mb-2 font-semibold">Plugin recording</h2>
-        <div class="flex items-center gap-2">
-          <button
-            class="rounded bg-sky-700 px-3 py-1 hover:bg-sky-600 disabled:opacity-50"
-            onclick={useLatestRecording}
-            disabled={clipLoading || recording || exporting}
-          >
-            Use latest recording
-          </button>
-          <button
-            class="rounded bg-zinc-700 px-3 py-1 hover:bg-zinc-600 disabled:opacity-50"
-            onclick={clearClip}
-            disabled={(recordings.length === 0 && !clipLoading) || exporting}
-          >
-            Clear
-          </button>
-        </div>
-        {#if clipLoading}
-          <p class="mt-2 text-sm text-zinc-400">
-            Syncing to audio and loading the recording…
-          </p>
-        {/if}
-        {#each recordings as r, i (i)}
-          <p class="mt-2 text-sm text-zinc-300" title={r.path}>
-            Window {i + 1}: {fileName(r.path)} ·
-            {r.clip.width}×{r.clip.height} · {formatTime(r.clip.duration)} · FL started
-            at {r.clip.offset.toFixed(3)} s
-            {#if i >= theme.pluginSlots}
-              <span class="text-zinc-500">(not shown by this theme)</span>
-            {/if}
-          </p>
-          {#if r.syncStatus}
-            <p
-              class={[
-                'mt-1 text-sm',
-                r.syncOk ? 'text-green-400' : 'text-amber-400',
-              ]}
-            >
-              Window {i + 1}: {r.syncStatus}
-            </p>
-          {/if}
-        {/each}
-        {#if clipError}
-          <p class="mt-2 text-sm text-red-400">{clipError}</p>
-        {/if}
-      </section>
-
-      <section class="mb-6">
-        <h2 class="mb-2 font-semibold">4. Export</h2>
-        <div class="flex items-center gap-2">
-          {#each EXPORT_FPS_OPTIONS as fps (fps)}
+        <div class="flex flex-col gap-3 border-t border-line pt-4">
+          <div class="flex flex-wrap items-center gap-3">
             <button
+              class="btn btn-secondary"
+              onclick={playAndRecord}
+              disabled={!canRecord}
+            >
+              <span class="size-2.5 rounded-full bg-rec"></span>
+              Play & record
+            </button>
+            <span class="text-xs text-muted">
+              {#if !decoded || usedWindowIds.length === 0}
+                Needs a beat and at least one picked window
+              {:else}
+                Plays FL from {clockTime(sectionStart)}, records {takeSeconds.toFixed(
+                  1,
+                )} s, then stops
+              {/if}
+            </span>
+          </div>
+          {#if recording}
+            <!-- scaleX instead of width: transforms don't re-run layout -->
+            <div class="h-1 overflow-hidden rounded-full bg-raised">
+              <div
+                class="h-full origin-left bg-rec transition-transform duration-300 ease-out"
+                style:transform="scaleX({recordingElapsed / takeSeconds})"
+              ></div>
+            </div>
+          {/if}
+          {#if takeStatus}
+            <p class="text-sm text-good">{takeStatus}</p>
+          {/if}
+          {#if takeError}
+            <p class="text-sm text-bad">{takeError}</p>
+          {/if}
+        </div>
+
+        <div class="flex flex-col gap-2 border-t border-line pt-4">
+          <div class="flex items-center gap-2">
+            <h3 class="text-xs font-medium text-soft">Recordings</h3>
+            <div class="ml-auto flex gap-1">
+              <button
+                class="btn btn-ghost"
+                onclick={useLatestRecording}
+                disabled={clipLoading || recording || exporting}
+              >
+                Use latest
+              </button>
+              <button
+                class="btn btn-ghost"
+                onclick={clearClip}
+                disabled={(recordings.length === 0 && !clipLoading) ||
+                  exporting}
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          {#if clipLoading}
+            <p class="text-sm text-muted">Syncing to the beat and loading…</p>
+          {/if}
+          {#each recordings as r, i (i)}
+            <div
+              class="flex items-start gap-3 rounded-lg bg-raised px-3 py-2"
+              title={r.path}
+            >
+              <span
+                class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border border-line-strong font-mono text-xs text-soft"
+              >
+                {i + 1}
+              </span>
+              <div class="min-w-0 flex-1">
+                <p class="truncate font-mono text-sm">{fileName(r.path)}</p>
+                <p class="text-xs text-muted tabular-nums">
+                  {r.clip.width} × {r.clip.height} · {formatTime(
+                    r.clip.duration,
+                  )} · FL started at {r.clip.offset.toFixed(3)} s
+                  {#if i >= theme.pluginSlots}
+                    · not shown by {theme.name}
+                  {/if}
+                </p>
+                {#if r.syncStatus}
+                  <p class="mt-1 flex items-center gap-2 text-xs text-soft">
+                    <span
+                      class={[
+                        'size-1.5 shrink-0 rounded-full',
+                        r.syncOk ? 'bg-good' : 'bg-warn',
+                      ]}
+                    ></span>
+                    {r.syncStatus}
+                  </p>
+                {/if}
+              </div>
+            </div>
+          {:else}
+            {#if !clipLoading}
+              <p class="text-sm text-muted">None yet</p>
+            {/if}
+          {/each}
+          {#if clipError}
+            <p class="text-sm text-bad">{clipError}</p>
+          {/if}
+        </div>
+
+        <details class="text-xs text-muted">
+          <summary class="cursor-pointer hover:text-soft"
+            >FL Studio setup</summary
+          >
+          <p class="mt-2 leading-5">
+            Open the same beat in FL and enable the "Beat Visualiser" MIDI
+            script in FL's MIDI settings. The app switches FL to song mode
+            itself. After updating the script, click "Reload script" in FL's
+            Script output window.
+          </p>
+        </details>
+      </Step>
+
+      <Step n={4} title="Theme">
+        <div
+          class="grid grid-cols-3 gap-2"
+          role="radiogroup"
+          aria-label="Theme"
+        >
+          {#each visualizers as v (v.id)}
+            <button
+              type="button"
+              role="radio"
+              aria-checked={v.id === theme.id}
               class={[
-                'rounded px-3 py-1 disabled:opacity-50',
-                fps === exportFps
-                  ? 'bg-sky-600 text-white'
-                  : 'bg-zinc-700 hover:bg-zinc-600',
+                'flex flex-col gap-1 rounded-xl border p-3 text-left transition-colors duration-150 ease-out disabled:opacity-40',
+                v.id === theme.id
+                  ? 'border-accent/50 bg-accent-soft'
+                  : 'border-line hover:bg-raised',
               ]}
-              onclick={() => (exportFps = fps)}
+              onclick={() => selectTheme(v.id)}
               disabled={exporting}
             >
-              {fps} fps
+              <span class="text-sm font-medium">{v.name}</span>
+              <span class="text-xs text-muted">{slotLabel(v.pluginSlots)}</span>
             </button>
           {/each}
-          <button
-            class="rounded-lg bg-sky-600 px-6 py-2 font-bold hover:bg-sky-500 disabled:opacity-50"
-            onclick={startExport}
-            disabled={!canExport}
-          >
-            Export MP4
-          </button>
         </div>
-        <p class="mt-2 text-sm text-zinc-400">
-          {formatTime(takeSeconds)} from the start of the beat, 1080×1920 H.264 +
-          AAC from the beat file{shownClips.length === 1
-            ? ', with the plugin recording'
+      </Step>
+
+      <Step n={5} title="Text">
+        {#snippet aside()}Shown at the top of the video, with the BPM from step
+          2{/snippet}
+        <div class="grid grid-cols-[3fr_1fr] gap-2">
+          <label class="flex min-w-0 flex-col gap-1">
+            <span class="text-xs text-muted">Beat name</span>
+            <input class="field" maxlength="60" bind:value={title.name} />
+          </label>
+          <label class="flex min-w-0 flex-col gap-1">
+            <span class="text-xs text-muted">Key</span>
+            <input class="field" maxlength="8" bind:value={title.key} />
+          </label>
+          <label class="col-span-2 flex min-w-0 flex-col gap-1">
+            <span class="text-xs text-muted">Producer tag</span>
+            <input
+              class="field"
+              maxlength="30"
+              placeholder="Shown as “prod. …”, leave empty to hide"
+              bind:value={title.tag}
+            />
+          </label>
+        </div>
+      </Step>
+
+      {#if theme.params.length > 0}
+        <Step n={6} title="Look">
+          {#snippet aside()}{theme.name}{/snippet}
+          <ParamControls schema={theme.params} bind:values={params} />
+        </Step>
+      {/if}
+
+      <Step title="Export">
+        {#snippet aside()}
+          <span class="font-mono">1080 × 1920 · H.264 + AAC</span>
+        {/snippet}
+        <p class="text-sm text-soft">
+          {takeSeconds.toFixed(1)} s from {clockTime(sectionStart)}, with the
+          beat file's audio{shownClips.length === 1
+            ? ' and the plugin recording'
             : shownClips.length > 1
-              ? `, with ${shownClips.length} plugin recordings`
-              : ''}.
+              ? ` and ${shownClips.length} plugin recordings`
+              : ''}
         </p>
-        {#if exporting}
-          <div class="mt-2 flex items-center gap-3">
-            <progress class="h-2 w-64" max="1" value={exportProgress}
-            ></progress>
-            <span class="text-sm text-zinc-300">
-              {Math.round(exportProgress * 100)}% · {exportElapsed} s
-            </span>
+        <div class="flex flex-wrap items-center gap-3">
+          <Segmented
+            label="Frame rate"
+            options={EXPORT_FPS_OPTIONS}
+            selected={exportFps}
+            format={(f) => `${f} fps`}
+            onselect={(f) => (exportFps = f as ExportFps)}
+            disabled={exporting}
+          />
+          <div class="ml-auto flex gap-2">
             <button
-              class="rounded bg-zinc-700 px-3 py-1 text-sm hover:bg-zinc-600"
-              onclick={cancelExport}
-            >
-              Cancel
-            </button>
-          </div>
-        {/if}
-        {#if exportedPath}
-          <div class="mt-2 flex items-center gap-3">
-            <span class="text-green-400" title={exportedPath}>
-              Saved: {fileName(exportedPath)}
-            </span>
-            <button
-              class="rounded bg-zinc-700 px-3 py-1 text-sm hover:bg-zinc-600"
+              class="btn btn-secondary"
               onclick={showInFolder}
+              disabled={!exportedPath}
             >
               Show in folder
             </button>
+            <button
+              class="btn btn-primary h-10 px-5"
+              onclick={startExport}
+              disabled={!canExport}
+            >
+              Export MP4
+            </button>
+          </div>
+        </div>
+        {#if exporting}
+          <div class="flex items-center gap-3">
+            <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-raised">
+              <div
+                class="h-full origin-left bg-accent"
+                style:transform="scaleX({exportProgress})"
+              ></div>
+            </div>
+            <span class="font-mono text-xs text-muted tabular-nums">
+              {Math.round(exportProgress * 100)}% · {exportElapsed} s
+            </span>
+            <button class="btn btn-ghost" onclick={cancelExport}>Cancel</button>
           </div>
         {/if}
-        {#if exportError}
-          <p class="mt-2 text-sm text-red-400">{exportError}</p>
+        {#if exportedPath}
+          <p class="truncate text-sm text-good" title={exportedPath}>
+            Saved {fileName(exportedPath)}
+          </p>
         {/if}
-      </section>
+        {#if exportError}
+          <p class="text-sm text-bad">{exportError}</p>
+        {/if}
+      </Step>
 
-      <details class="mb-6 text-sm">
-        <summary class="cursor-pointer text-zinc-400">Debug</summary>
+      <details class="px-1 text-xs text-muted">
+        <summary class="cursor-pointer hover:text-soft">Debug</summary>
         <div class="mt-2 flex items-center gap-2">
-          <span>FL Studio:</span>
+          <span>FL Studio</span>
           <button
-            class="rounded bg-green-700 px-3 py-1 hover:bg-green-600"
+            class="btn btn-ghost"
             onclick={() => sendToFl('fl_play', 'play')}
           >
             Play
           </button>
           <button
-            class="rounded bg-zinc-700 px-3 py-1 hover:bg-zinc-600"
+            class="btn btn-ghost"
             onclick={() => sendToFl('fl_stop', 'stop')}
           >
             Stop
           </button>
-          <span class="text-zinc-400">{flStatus}</span>
+          <span class="font-mono">{flStatus}</span>
         </div>
       </details>
     </div>
+  </main>
+</div>
 
-    <!-- sticky: the preview stays in view when the left column scrolls -->
-    <section class="sticky top-6">
-      <div class="mb-2 flex items-center gap-3">
-        <h2 class="font-semibold">Preview</h2>
-        <select
-          class="rounded bg-zinc-800 px-2 py-1 text-sm disabled:opacity-50"
-          disabled={exporting}
-          value={theme.id}
-          onchange={(e) => selectTheme(e.currentTarget.value)}
-        >
-          {#each visualizers as v (v.id)}
-            <option value={v.id}>{v.name}</option>
-          {/each}
-        </select>
-      </div>
-      <div class="flex items-start gap-4">
-        <Preview
-          bind:this={preview}
-          visualizer={theme}
-          {params}
-          {frameSource}
-          getTime={getPlaybackTime}
-          isPlaying={isBeatPlaying}
-          clips={shownClips}
-        />
-        {#if theme.params.length > 0}
-          <div class="w-64">
-            <ParamControls schema={theme.params} bind:values={params} />
-          </div>
-        {/if}
-      </div>
-    </section>
-  </div>
-</main>
+{#if setupOpen}
+  <Setup {connection} ontest={testConnection} onclose={closeSetup} />
+{/if}

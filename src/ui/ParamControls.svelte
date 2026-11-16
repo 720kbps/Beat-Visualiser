@@ -56,8 +56,8 @@
 
 <div class="flex flex-col gap-2 text-sm">
   {#each schema as def (def.id)}
-    <label class="grid grid-cols-[7rem_1fr_3rem] items-center gap-2">
-      <span class="truncate">{def.label}</span>
+    <label class="grid min-h-9 grid-cols-[8rem_1fr_3rem] items-center gap-3">
+      <span class="truncate text-soft">{def.label}</span>
 
       {#if def.type === 'number'}
         <input
@@ -68,13 +68,13 @@
           value={numberValue(def)}
           oninput={(e) => (values[def.id] = e.currentTarget.valueAsNumber)}
         />
-        <span class="text-right tabular-nums">
+        <span class="text-right font-mono text-xs text-muted tabular-nums">
           {formatNumber(numberValue(def), def.step)}
         </span>
       {:else if def.type === 'color'}
         <input
           type="color"
-          class="h-6 w-12 cursor-pointer"
+          class="h-7 w-12 cursor-pointer rounded-md border border-line bg-raised"
           value={colorValue(def)}
           oninput={(e) => (values[def.id] = e.currentTarget.value)}
         />
@@ -89,7 +89,7 @@
         <!-- col-span-2: the text field also takes the value column -->
         <input
           type="text"
-          class="col-span-2 rounded bg-zinc-800 px-2 py-1"
+          class="field col-span-2"
           maxlength={def.maxLength}
           value={textValue(def)}
           oninput={(e) => (values[def.id] = e.currentTarget.value)}

@@ -4,6 +4,7 @@
   // starts/stops the engine: the render context, the frame loop, and the
   // current theme (visualizer).
   import { onMount } from 'svelte'
+  import SafeZoneOverlay from './SafeZoneOverlay.svelte'
   import {
     createRenderContext,
     disposeRenderContext,
@@ -13,6 +14,12 @@
     type RenderContext,
   } from '../engine/render/renderer'
   import { PEAK_COLUMNS, type FrameSource } from '../engine/frame/frame-data'
+  import { renderFrame } from '../engine/render/render-frame'
+  import {
+    createTitleCard,
+    type TitleCard,
+    type TitleText,
+  } from '../engine/overlay/title-card'
   import type { PluginClip } from '../engine/video/plugin-clip'
   import type {
     FrameData,
@@ -27,6 +34,7 @@
     getTime,
     isPlaying,
     clips,
+    title,
   }: {
     visualizer: Visualizer
     params: ParamValues
@@ -34,6 +42,7 @@
     getTime: () => number // playback position in seconds, read every frame
     isPlaying: () => boolean // is the beat playing? read every frame
     clips: PluginClip[] // the recorded plugin windows, one per slot (top first)
+    title: TitleText // the title card's text, read every frame
   } = $props()
 
   // What we draw while no beat is loaded: silence at time 0, flat waveform.
@@ -59,6 +68,10 @@
   // switching. A plain variable, not $state: only the frame loop reads it.
   let active: Visualizer | null = null
 
+  // The title card, drawn over every theme. Created with the context.
+  // A plain variable: only the frame loop and withRenderer read it.
+  let titleCard: TitleCard | null = null
+
   // Displayed size in CSS pixels. Only changes when the layout changes (window
   // resize), not per frame, so Svelte state is fine here.
   let shownWidth = $state(0)
@@ -76,13 +89,19 @@
   // instance, not a second one. The loop restarts when `work` is done, also
   // after an error. Called from App via bind:this.
   export async function withRenderer<T>(
-    work: (ctx: RenderContext, visualizer: Visualizer) => Promise<T>,
+    work: (
+      ctx: RenderContext,
+      visualizer: Visualizer,
+      titleCard: TitleCard,
+    ) => Promise<T>,
   ): Promise<T> {
-    if (!ctx || !active) throw new Error('The preview is not ready yet.')
+    if (!ctx || !active || !titleCard) {
+      throw new Error('The preview is not ready yet.')
+    }
     stopLoop?.()
     stopLoop = null
     try {
-      return await work(ctx, active)
+      return await work(ctx, active, titleCard)
     } finally {
       if (!destroyed) stopLoop = startRenderLoop(drawFrame)
     }
@@ -96,7 +115,7 @@
   // One frame: everything is read here, every frame, as plain values. Per-frame
   // data (time, levels, playhead) never goes into Svelte state.
   function drawFrame() {
-    if (!active) return
+    if (!active || !titleCard) return
     const time = getTime()
     const frame = frameSource ? frameSource.getFrame(time) : idleFrame
     // Each plugin video follows the beat's clock (play/pause/seek), then the
@@ -105,7 +124,7 @@
     const playing = isPlaying()
     for (const clip of clips) clip.sync(time, playing)
     frame.plugins = clips.map((clip) => clip.video)
-    active.render(frame, params)
+    renderFrame(active, frame, params, titleCard, title)
   }
 
   // onMount: the context and the loop have no inputs, so they're set up once.
@@ -126,6 +145,7 @@
       return () => observer.disconnect()
     }
     ctx = context
+    titleCard = createTitleCard(context)
     stopLoop = startRenderLoop(drawFrame)
 
     return () => {
@@ -137,6 +157,8 @@
       // below also disposes it on removal; dispose() is safe to call twice.
       active?.dispose()
       active = null
+      titleCard?.dispose()
+      titleCard = null
       disposeRenderContext(context)
     }
   })
@@ -156,39 +178,35 @@
   })
 </script>
 
-<div class="flex flex-col items-center gap-2">
+<div class="flex flex-col items-center gap-3">
   <!--
     The canvas' pixel size (canvas.width/height) is always 1080×1920, set by
-    the engine. These classes only set how big it is SHOWN: a fixed height and
-    a 9:16 aspect ratio give the width. The browser scales the image down.
+    the engine. These classes only set how big it is SHOWN: the height fills
+    the window below the top bar, and the 9:16 aspect ratio gives the width.
+    The browser scales the image down.
   -->
-  <div class="relative overflow-hidden rounded">
+  <div
+    class="relative overflow-hidden rounded-[20px] border border-line bg-black"
+  >
     <canvas
       bind:this={canvas}
-      class="block aspect-9/16 h-[min(75vh,960px)] bg-black"
+      class="block aspect-9/16 h-[min(calc(100vh-136px),960px)] min-h-96"
     ></canvas>
     {#if showSafeZone}
-      <!--
-        CSS only, drawn by the browser on top of the canvas. It's not part of
-        the rendered 1080×1920 image, so it never ends up in the export.
-        Shaded: the bottom 20% and the right 12% (TikTok's caption and buttons).
-      -->
-      <div
-        class="pointer-events-none absolute inset-x-0 bottom-0 h-[20%] bg-red-500/30"
-      ></div>
-      <div
-        class="pointer-events-none absolute top-0 right-0 bottom-[20%] w-[12%] bg-red-500/30"
-      ></div>
+      <!-- Mock TikTok/Reels UI over the canvas; never part of the export -->
+      <SafeZoneOverlay />
     {/if}
   </div>
-  <div class="flex items-center gap-4 text-sm text-zinc-400">
-    <span>{OUTPUT_WIDTH}×{OUTPUT_HEIGHT}, shown at {scalePercent}%</span>
-    <label class="flex items-center gap-1">
+  <div class="flex items-center gap-4 text-xs text-muted">
+    <span class="font-mono tabular-nums">
+      {OUTPUT_WIDTH} × {OUTPUT_HEIGHT} · shown at {scalePercent}%
+    </span>
+    <label class="flex cursor-pointer items-center gap-2 hover:text-soft">
       <input type="checkbox" bind:checked={showSafeZone} />
-      Show safe zone
+      Safe zone
     </label>
   </div>
   {#if error}
-    <p class="text-sm text-red-400">{error}</p>
+    <p class="text-sm text-bad">{error}</p>
   {/if}
 </div>

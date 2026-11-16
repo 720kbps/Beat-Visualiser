@@ -1,7 +1,7 @@
 // Renders the clip frame by frame and encodes it into an MP4 in memory.
 //
 // How the pieces fit (CLAUDE.md, Export):
-//   theme.render(frame i)            the SAME call the preview makes, into the same canvas
+//   renderFrame(frame i)             theme + title card, the SAME call the preview makes, into the same canvas
 //   -> VideoFrame of the canvas      a snapshot of the pixels, plus a timestamp
 //   -> VideoEncoder (H.264)          WebCodecs, the system's hardware encoder
 //   -> MP4 muxer                     Mediabunny writes the packets into an MP4 file
@@ -39,6 +39,8 @@ import {
 } from 'mediabunny'
 import type { FrameSource } from '../frame/frame-data'
 import type { RenderContext } from '../render/renderer'
+import { renderFrame } from '../render/render-frame'
+import type { TitleCard, TitleText } from '../overlay/title-card'
 import type { ParamValues, Visualizer } from '../visualizers/types'
 import { applyFades, sliceSection } from './audio-section'
 import { openPluginFrames, type PluginFrameReader } from './plugin-frames'
@@ -59,6 +61,8 @@ export type ExportOptions = {
   ctx: RenderContext // the preview's renderer; the caller pauses the preview loop
   visualizer: Visualizer // already init()ed on ctx
   params: ParamValues // a snapshot: not changed while exporting
+  titleCard: TitleCard // the preview's, made on ctx
+  title: TitleText // a snapshot too
   // Per-frame values for exactly the exported section:
   // getFrame(t) with t = seconds into the clip (0..length).
   frameSource: FrameSource
@@ -88,7 +92,8 @@ export async function exportVideo(
   onProgress: ProgressCallback,
   signal: AbortSignal,
 ): Promise<Uint8Array> {
-  const { ctx, visualizer, params, frameSource, fps } = options
+  const { ctx, visualizer, params, titleCard, title, frameSource, fps } =
+    options
   const audio = options.audio
   const channels = Math.min(audio.numberOfChannels, 2)
 
@@ -174,7 +179,7 @@ export async function exportVideo(
 
       const frame = frameSource.getFrame(t)
       frame.plugins = pluginCanvases
-      visualizer.render(frame, params)
+      renderFrame(visualizer, frame, params, titleCard, title)
       // No await between render() and add(): add() snapshots the canvas
       // synchronously, then we wait for the encoder (backpressure).
       await video.add(t, 1 / fps)

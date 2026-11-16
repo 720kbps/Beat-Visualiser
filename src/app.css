@@ -1,1 +1,92 @@
 @import 'tailwindcss';
+
+/*
+  Design tokens for the control panel (the video itself is drawn by the
+  WebGL themes, not by these). Tailwind v4 turns each --color-* into classes,
+  e.g. --color-surface -> bg-surface, text-surface, border-surface.
+
+  - One cool neutral ramp ("ink"): page, surface, raised. Only the preview
+    carries strong color, so the chrome stays quiet.
+  - Three text roles: fg (primary), soft (secondary), muted (meta).
+  - One accent, taken from the LCD blue of the first theme: selection,
+    the primary action, the active option.
+  - rec: the red of the record dot. Only used for recording.
+*/
+@theme {
+  --color-page: #0b0d14;
+  --color-surface: #11141c;
+  --color-raised: #1a1e28;
+  --color-raised-hover: #222736;
+  --color-line: rgb(238 240 245 / 0.09);
+  --color-line-strong: rgb(238 240 245 / 0.16);
+
+  --color-fg: #eef0f5;
+  --color-soft: #a3a9b8;
+  --color-muted: #7a8296;
+
+  --color-accent: #8c9bff;
+  --color-accent-hover: #a3afff;
+  --color-accent-ink: #10142e; /* text on the accent */
+  --color-accent-soft: rgb(140 155 255 / 0.14); /* selected row, active chip */
+
+  --color-good: #4cc38a;
+  --color-warn: #e0b45c;
+  --color-bad: #e5484d;
+  --color-rec: #ff5f57;
+
+  /* System fonts: native on macOS/Windows, nothing loaded from the network. */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI Variable', 'Segoe UI',
+    system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-page);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Native sliders and checkboxes pick up the accent. */
+input[type='range'],
+input[type='checkbox'] {
+  accent-color: var(--color-accent);
+}
+
+/*
+  Shared control styles. Written once here so every button and field in the
+  Svelte files looks the same: class="btn btn-secondary", class="field".
+*/
+@layer components {
+  .btn {
+    @apply inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg px-4 text-sm font-medium whitespace-nowrap transition-[color,background-color,border-color,transform] duration-150 ease-out select-none active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40;
+  }
+  .btn-primary {
+    @apply bg-accent text-accent-ink hover:bg-accent-hover;
+  }
+  .btn-secondary {
+    @apply border border-line bg-raised text-fg shadow-[inset_0_1px_0_rgb(255_255_255/0.06)] hover:bg-raised-hover;
+  }
+  .btn-ghost {
+    @apply h-8 px-3 text-soft hover:bg-raised hover:text-fg;
+  }
+  .field {
+    @apply h-9 min-w-0 rounded-lg border border-line bg-raised px-3 text-sm text-fg transition-colors duration-150 ease-out placeholder:text-muted focus:border-accent/60 focus:outline-none disabled:opacity-40;
+  }
+  .kbd {
+    @apply inline-flex h-5 items-center rounded-sm border border-line bg-raised px-1.5 font-mono text-xs text-soft;
+  }
+}
+
+/* One visible focus ring for keyboard users, everywhere. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}

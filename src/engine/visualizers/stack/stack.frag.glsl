@@ -1,5 +1,5 @@
-// "Stack": a plain background, the recorded plugin windows stacked on top of
-// each other (shown unchanged), and a title above them.
+// "Stack": a plain background and the recorded plugin windows stacked on top
+// of each other (shown unchanged). The title card is drawn over this later.
 // All placement is computed in TypeScript (layout.ts); this shader only
 // fills the rectangles it gets.
 //
@@ -16,10 +16,6 @@ uniform vec4 uSlotRect[3];
 uniform sampler2D uSlot0;
 uniform sampler2D uSlot1;
 uniform sampler2D uSlot2;
-
-// The title, drawn by a 2D canvas (white text on transparent).
-uniform sampler2D uTitle;
-uniform vec4 uTitleRect;
 
 bool inside(vec2 px, vec4 rect) {
   return px.x >= rect.x && px.x < rect.z && px.y >= rect.y && px.y < rect.w;
@@ -57,12 +53,6 @@ void main() {
     color = sampleWindow(uSlot1, px, uSlotRect[1]);
   } else if (uSlotCount > 2 && inside(px, uSlotRect[2])) {
     color = sampleWindow(uSlot2, px, uSlotRect[2]);
-  }
-
-  // Title over everything. The canvas is drawn 1:1 (one texel per pixel).
-  if (inside(px, uTitleRect)) {
-    vec4 title = texture2D(uTitle, rectUv(px, uTitleRect));
-    color = mix(color, title.rgb, title.a);
   }
 
   gl_FragColor = vec4(color, 1.0);

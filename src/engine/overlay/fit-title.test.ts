@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fitTitle, type MeasureText } from './title'
+import { fitTitle, type MeasureText } from './fit-title'
 
 // Fake font: every character is half the font size wide
 const measure: MeasureText = (text, fontSize) => text.length * fontSize * 0.5

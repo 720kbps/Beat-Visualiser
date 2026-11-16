@@ -13,13 +13,15 @@
 import { peaksFromBuffer } from '../audio/peaks'
 import { formatTime, timeToX, xToTime } from './waveform-helpers'
 
-// Placeholder colors in the LCD spirit
-const BACKGROUND = '#0a1424'
-const CENTER_LINE = 'rgba(56, 189, 248, 0.25)'
-const WAVE = '#38bdf8'
+// Colors match the control panel's tokens in src/app.css (raised surface,
+// muted wave, primary text). The engine can't read CSS variables cheaply, so
+// they're repeated here.
+const BACKGROUND = '#1a1e28'
+const CENTER_LINE = 'rgba(238, 240, 245, 0.08)'
+const WAVE = '#7d86b8'
 const PLAYED_DIM = 'rgba(0, 0, 0, 0.35)'
-const PLAYHEAD = '#e0f2fe'
-const TEXT = '#bae6fd'
+const PLAYHEAD = '#eef0f5'
+const TEXT = '#a3a9b8'
 
 export type WaveformView = {
   dispose(): void

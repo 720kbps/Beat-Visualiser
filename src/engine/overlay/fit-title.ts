@@ -1,6 +1,5 @@
-// The title text of the "Stack" theme, drawn with a 2D canvas (the browser
-// does the font rendering) and shown by the shader as a texture.
-// fitTitle() is pure so it can be tested in Node; drawTitle() needs a canvas.
+// Word-wrapping for the title card (title-card.ts). Pure, so it can be
+// tested in Node; the card passes in canvas measureText as `measure`.
 
 export const TITLE_MAX_LINES = 2
 export const TITLE_LINE_HEIGHT = 1.2 // times the font size
@@ -62,34 +61,4 @@ function wrapWords(
   }
   lines.push(line)
   return lines
-}
-
-export function titleFont(fontSize: number): string {
-  return `bold ${fontSize}px system-ui, -apple-system, sans-serif`
-}
-
-// Clears `canvas` and draws the lines centered, white, top-aligned at
-// `padding`, with a soft shadow so the text also reads on a light background.
-export function drawTitle(
-  canvas: HTMLCanvasElement,
-  title: TitleLines,
-  padding: number,
-): void {
-  const g = canvas.getContext('2d')
-  if (!g) return
-  g.clearRect(0, 0, canvas.width, canvas.height)
-
-  g.font = titleFont(title.fontSize)
-  g.fillStyle = '#ffffff'
-  g.textAlign = 'center'
-  g.textBaseline = 'middle'
-  g.shadowColor = 'rgba(0, 0, 0, 0.5)'
-  g.shadowBlur = 12
-  g.shadowOffsetY = 3
-
-  const lineHeight = title.fontSize * TITLE_LINE_HEIGHT
-  title.lines.forEach((line, i) => {
-    const y = padding + lineHeight * (i + 0.5)
-    g.fillText(line, canvas.width / 2, y)
-  })
 }

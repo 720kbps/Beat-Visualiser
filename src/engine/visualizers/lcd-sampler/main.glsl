@@ -63,7 +63,7 @@ vec3 deviceFace(vec2 px, vec3 metal) {
 }
 
 void main() {
-  vec2 px = gl_FragCoord.xy; // pixel centers at .5, (0.5, 0.5) = bottom-left pixel
+  vec2 px = toDevice(gl_FragCoord.xy); // device pixels, see common.glsl (Layout)
 
   vec3 col = background(px);
   drawBodyShadow(col, px);

@@ -14,9 +14,13 @@
   let {
     onfile,
     disabled = false,
+    name = '',
+    meta = '',
   }: {
     onfile: (file: BeatFile) => void
     disabled?: boolean // true = drops are ignored (e.g. while exporting)
+    name?: string // the loaded beat's file name; '' = nothing loaded yet
+    meta?: string // one line under the name, e.g. "3:12 · 44.1 kHz · stereo"
   } = $props()
 
   let hovering = $state(false) // a file is being dragged over the window
@@ -82,22 +86,56 @@
   })
 </script>
 
+<!--
+  Two looks: an empty drop target before the first beat, then a file row
+  (icon, name, meta). Both stay drop targets: the whole window catches drops.
+-->
 <div
   class={[
-    'flex h-40 items-center justify-center rounded-lg border-2 border-dashed transition-colors',
-    hovering
-      ? 'border-sky-400 bg-sky-950 text-sky-300'
-      : 'border-zinc-600 bg-zinc-800 text-zinc-400',
-    disabled && 'opacity-50',
+    'flex items-center gap-3 rounded-xl border border-dashed px-3 transition-colors duration-150 ease-out',
+    name ? 'h-16' : 'h-28 justify-center',
+    hovering ? 'border-accent/60 bg-accent-soft' : 'border-line-strong',
+    disabled && 'opacity-40',
   ]}
 >
-  {#if loading}
-    <p>Loading…</p>
+  {#if name}
+    <span
+      class="grid size-9 shrink-0 place-items-center rounded-lg bg-raised text-soft"
+      aria-hidden="true"
+    >
+      <!-- a music note, drawn as a line icon -->
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M9 18V5l12-2v13" />
+        <circle cx="6" cy="18" r="3" />
+        <circle cx="18" cy="16" r="3" />
+      </svg>
+    </span>
+    <div class="min-w-0 flex-1">
+      <p class="truncate font-mono text-sm">{name}</p>
+      <p class="truncate text-xs text-muted tabular-nums">{meta}</p>
+    </div>
+    <p class="shrink-0 text-xs text-muted">
+      {loading ? 'Loading…' : 'Drop another file to replace'}
+    </p>
   {:else}
-    <p>Drop your beat here — WAV or MP3</p>
+    <div class="text-center">
+      <p class="text-sm text-fg">
+        {loading ? 'Loading…' : 'Drop your beat here'}
+      </p>
+      <p class="mt-1 text-xs text-muted">WAV or MP3, the file you exported</p>
+    </div>
   {/if}
 </div>
 
 {#if error}
-  <p class="mt-2 text-red-400">{error}</p>
+  <p class="mt-2 text-sm text-bad">{error}</p>
 {/if}

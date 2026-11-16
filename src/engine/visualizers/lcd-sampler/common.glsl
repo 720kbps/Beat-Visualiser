@@ -64,10 +64,20 @@ uniform float uMetalTone;  // 0.2 = dark metal, 1 = light metal
 varying vec2 vUv; // 0..1, (0,0) = bottom-left
 
 // ---------- Layout ----------
-// Output pixels, origin at the BOTTOM-left, y up. Rects are vec4(x0, y0, x1, y1).
-// TikTok safe zone: the screens stay inside x 60..900, y 420..1860 (out of the
-// bottom 20% and the right 12%). The metal body and the decoration (knobs,
-// pads, vents) may go anywhere.
+// Device pixels, origin at the BOTTOM-left, y up. Rects are vec4(x0, y0, x1, y1).
+// The device is designed at full frame size (1080x1920) and drawn at
+// DEVICE_SCALE, centered horizontally and resting on the bottom edge, so the
+// top of the frame stays free for the title card (overlay/title-card.ts).
+// main() turns each output pixel into device pixels with toDevice().
+// TikTok safe zone (output pixels): the screens stay out of the bottom 20%
+// and the right 12%. The metal body and the decoration (knobs, pads, vents)
+// may go anywhere.
+
+const float DEVICE_SCALE = 0.8; // device top at y 1520, below the title card
+
+vec2 toDevice(vec2 frag) {
+  return vec2(540.0 + (frag.x - 540.0) / DEVICE_SCALE, frag.y / DEVICE_SCALE);
+}
 
 // The device: an aluminium body with a polished chamfer (RIM) around the face
 // and BODY_DEPTH px of side wall visible below it, so it reads as a thick object.
