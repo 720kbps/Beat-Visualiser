@@ -6,16 +6,16 @@ It does play, stop, rewind, jump to a position and ping, and makes sure FL is in
 
 ## Protocol
 
-| What          | Value                                                                                                                   |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| Port name     | `Beat Visualiser`, both directions: a virtual output (FL's input) and a virtual input (FL's output), created by the app |
-| MIDI channel  | 1                                                                                                                       |
-| Note 60       | Play (note-on, velocity > 0). Switches to song mode first if needed. Does nothing if FL is already playing.             |
-| Note 61       | Stop (note-on, velocity > 0)                                                                                            |
-| Note 62       | Ping. The script answers with note-on 62 on FL's linked MIDI output; the app waits up to 1.5 s for it.                  |
-| Note 63       | Switch to song mode if FL is in pattern mode, then rewind to the song start (`transport.setSongPos(0.0)`)               |
-| CC 20, 21, 22 | The next jump's position in milliseconds, 7 bits each: bits 0–6, 7–13, 14–20 (up to ~35 min). Only stored.              |
-| Note 64       | Song mode if needed, then jump to the stored position (`transport.setSongPos(ms, midi.SONGLENGTH_MS)`)                  |
+| What          | Value                                                                                                                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ports         | macOS: `Beat Visualiser` both ways, virtual ports the app creates. Windows: loopback ports the user creates, `Beat Visualiser` (app → FL) and `Beat Visualiser Reply` (FL → app)            |
+| MIDI channel  | 1                                                                                                                                                                                           |
+| Note 60       | Play (note-on, velocity > 0). Switches to song mode first if needed. Does nothing if FL is already playing.                                                                                 |
+| Note 61       | Stop (note-on, velocity > 0)                                                                                                                                                                |
+| Note 62       | Ping. The script answers with note-on 65 on FL's linked MIDI output; the app waits up to 1.5 s for it. 65, not 62: an answer that loops back into FL is then never mistaken for a new ping. |
+| Note 63       | Switch to song mode if FL is in pattern mode, then rewind to the song start (`transport.setSongPos(0.0)`)                                                                                   |
+| CC 20, 21, 22 | The next jump's position in milliseconds, 7 bits each: bits 0–6, 7–13, 14–20 (up to ~35 min). Only stored.                                                                                  |
+| Note 64       | Song mode if needed, then jump to the stored position (`transport.setSongPos(ms, midi.SONGLENGTH_MS)`)                                                                                      |
 
 Song mode: `transport.setLoopMode()` toggles between pattern and song, so the script only calls it when `transport.getLoopMode()` returns 0 (pattern). It switches before rewinding, because FL keeps separate positions for pattern and song mode. The app sends stop, the position, jump, play for each take, so a take always plays the song from the section start, even if FL was left in pattern mode. FL's song position in ms equals the time in the beat file because the beat was exported from the song start.
 

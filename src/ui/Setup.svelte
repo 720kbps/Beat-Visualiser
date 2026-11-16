@@ -2,7 +2,8 @@
   // One-time setup (CLAUDE.md, user flow step 0). A panel over the app with
   // the five things that must work before the first take:
   //   1. our script is in FL's Settings/Hardware folder (copied automatically)
-  //   2. the virtual MIDI ports exist (created by the app at startup)
+  //   2. the MIDI ports exist (macOS: created by the app at startup;
+  //      Windows: two loopback ports the user creates once, see fl_midi.rs)
   //   3. the user picked them in FL's MIDI settings (manual, shown with a GIF)
   //   4. "Test connection": FL answers a ping
   //   5. macOS Screen Recording permission
@@ -103,6 +104,20 @@
 
   let scriptOk = $derived(status?.script.up_to_date ?? false)
   let midiOk = $derived(status !== null && status.midi_error === null)
+  let windows = $derived(status?.platform === 'windows')
+  // The output FL answers on: its own port on Windows (fl_midi.rs).
+  let replyPort = $derived(
+    windows ? 'Beat Visualiser Reply' : 'Beat Visualiser',
+  )
+  let checking = $state(false)
+
+  // Windows: setup_status tries to open the loopback ports again, so a
+  // check right after creating them in loopMIDI picks them up.
+  async function checkAgain() {
+    checking = true
+    await refresh()
+    checking = false
+  }
   let permissionOk = $derived(status?.screen_permission ?? false)
 
   function onKeydown(event: KeyboardEvent) {
@@ -192,12 +207,43 @@
         <span class={['mt-1.5 size-2 shrink-0 rounded-full', dot(midiOk)]}
         ></span>
         <div class="flex min-w-0 flex-1 flex-col gap-1">
-          <h3 class="text-sm font-medium">The MIDI port</h3>
+          <h3 class="text-sm font-medium">
+            {windows ? 'The MIDI ports' : 'The MIDI port'}
+          </h3>
+          {#if windows && !midiOk}
+            <!--
+              Windows apps can't make MIDI ports themselves, so the user
+              creates two loopback ports once. UNTESTED (docs/windows-testing.md).
+            -->
+            <ol class="list-decimal space-y-1 pl-5 text-sm text-soft">
+              <li>
+                Install loopMIDI (free, by Tobias Erichsen) and open it. It
+                starts with Windows from then on.
+              </li>
+              <li>
+                Add two ports with exactly these names: “Beat Visualiser” and
+                “Beat Visualiser Reply”.
+              </li>
+            </ol>
+          {/if}
           {#if status?.midi_error}
             <p class="text-sm text-bad">{status.midi_error}</p>
+            {#if windows}
+              <div class="mt-1">
+                <button
+                  class="btn btn-secondary"
+                  onclick={checkAgain}
+                  disabled={checking}
+                >
+                  {checking ? 'Checking…' : 'Check again'}
+                </button>
+              </div>
+            {/if}
           {:else if status}
             <p class="text-sm text-soft">
-              “Beat Visualiser” is ready while this app is open.
+              {windows
+                ? '“Beat Visualiser” and “Beat Visualiser Reply” are connected.'
+                : '“Beat Visualiser” is ready while this app is open.'}
             </p>
           {/if}
         </div>
@@ -221,9 +267,15 @@
               10.
             </li>
             <li>
-              Under Output, select “Beat Visualiser” and give it the same port
+              Under Output, select “{replyPort}” and give it the same port
               number.
             </li>
+            {#if windows}
+              <li>
+                Leave the “Beat Visualiser Reply” input switched off: it’s only
+                for FL’s answers.
+              </li>
+            {/if}
           </ol>
           <p class="text-xs text-muted">
             Not in the list? Click “Rescan devices” in the same window.

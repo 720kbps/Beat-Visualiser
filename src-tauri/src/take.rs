@@ -89,6 +89,8 @@ pub fn record_take(
             "The section start ({start_seconds:.2} s) is out of range."
         ));
     }
+    // On Windows the loopback ports may have been created after the app started.
+    fl_midi::reconnect_if_needed(port, listener);
     fl_midi::check_port(port)?;
     // FL must really be listening, or we'd record a silent, still take.
     fl_midi::ping(port, listener)?;

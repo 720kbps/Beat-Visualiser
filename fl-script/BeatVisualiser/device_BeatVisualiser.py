@@ -7,14 +7,17 @@
 #
 #   note 60 (note-on, velocity > 0)  ->  play
 #   note 61 (note-on, velocity > 0)  ->  stop
-#   note 62 (note-on, velocity > 0)  ->  ping: answer with note 62 back
+#   note 62 (note-on, velocity > 0)  ->  ping: answer with note 65 back
 #   note 63 (note-on, velocity > 0)  ->  rewind to the song start
 #   CC 20/21/22                      ->  store a song position in ms, 7 bits
 #                                        each (low, middle, high)
 #   note 64 (note-on, velocity > 0)  ->  jump to that stored position
 #
 # The ping answer goes out on FL's MIDI output that has the same port number
-# as this script's input. The app listens there ("Test connection").
+# as this script's input. The app listens there ("Test connection"). The
+# answer is a different note than the ping, so if that output ever loops back
+# into this script (a loopback port on Windows), it can't trigger another
+# answer.
 #
 # Play, rewind and jump first switch FL to song mode if it is in pattern mode,
 # so a take always plays the song, never just the selected pattern.
@@ -34,6 +37,7 @@ CHANNEL = 0  # MIDI channel 1. In the status byte, channels are counted from 0.
 NOTE_PLAY = 60
 NOTE_STOP = 61
 NOTE_PING = 62
+NOTE_PONG = 65  # sent back, never received
 NOTE_REWIND = 63
 NOTE_JUMP = 64
 CC_POSITION = 20  # 20, 21, 22: the low, middle and high 7 bits of the position
@@ -59,8 +63,8 @@ def OnInit():
 
 def answer_ping():
     # One MIDI message packed into an int: status | data1 << 8 | data2 << 16.
-    # Note-on, channel 1, note 62, velocity 127.
-    device.midiOutMsg(midi.MIDI_NOTEON + CHANNEL + (NOTE_PING << 8) + (127 << 16))
+    # Note-on, channel 1, note 65, velocity 127.
+    device.midiOutMsg(midi.MIDI_NOTEON + CHANNEL + (NOTE_PONG << 8) + (127 << 16))
 
 
 def ensure_song_mode():

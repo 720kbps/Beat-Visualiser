@@ -1,5 +1,4 @@
-// Talks to FL Studio over MIDI. The app creates a virtual MIDI port that FL
-// sees as an input device; our FL script (fl-script/) reacts to the notes.
+// Talks to FL Studio over MIDI. Our FL script (fl-script/) reacts to the notes.
 //
 // Protocol (shared with fl-script/, don't change one side only):
 //   channel 1, note-on then note-off
@@ -7,20 +6,42 @@
 //   song start, note 64 = jump to the position sent just before it as three
 //   control changes (CC 20/21/22 = bits 0-6/7-13/14-20 of the position in ms,
 //   because a MIDI data byte only holds 7 bits)
+//   FL -> app: note 65 = the answer to a ping ("pong")
 //
-// The other direction: the app also creates a virtual MIDI input with the
-// same name, which FL sees as an output device. The script answers a ping
-// by sending note 62 back on it. That's how "Test connection" knows FL is
-// really listening. FL only sends to that output when, in its MIDI settings,
-// the output has the same port number as the script's input.
+// Two ports, one each way:
+// - app -> FL ("Beat Visualiser"): FL's input, with our script on it.
+// - FL -> app: FL's output. The script answers a ping on it; that's how
+//   "Test connection" knows FL is really listening. FL only sends to that
+//   output when, in its MIDI settings, it has the same port number as the
+//   script's input.
+//
+// Where the ports come from:
+// - macOS: the app creates both as virtual ports (CoreMIDI), both called
+//   "Beat Visualiser". They exist while the app runs.
+// - Windows: apps can't create ports with midir. The user creates two
+//   loopback ports once (loopMIDI, or Windows MIDI Services), called
+//   "Beat Visualiser" and "Beat Visualiser Reply", and the app connects to
+//   them by name. A loopback port hands everything sent into it to everyone
+//   listening on it, so it can't be used both ways: FL would hear its own
+//   answer. Hence two ports, and a pong (65) that differs from the ping (62),
+//   so even a wrongly enabled Reply input in FL can't start a ping-pong loop.
+//   UNTESTED on Windows: see docs/windows-testing.md.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use midir::{MidiInputConnection, MidiOutputConnection};
 
-// FL remembers its MIDI settings by port name, so keep this exact name.
+// FL remembers its MIDI settings by port name, so keep these exact names.
+// The app sends to FL on this one.
 pub const PORT_NAME: &str = "Beat Visualiser";
+// The app listens for FL's answers on this one: the same name on macOS (a
+// virtual input is a different port than the virtual output), a separate
+// loopback port on Windows.
+#[cfg(target_os = "macos")]
+pub const LISTEN_PORT_NAME: &str = PORT_NAME;
+#[cfg(not(target_os = "macos"))]
+pub const LISTEN_PORT_NAME: &str = "Beat Visualiser Reply";
 
 // MIDI status bytes for channel 1 (the low 4 bits are the channel, 0 = ch 1).
 const NOTE_ON: u8 = 0x90;
@@ -31,6 +52,7 @@ const NOTE_STOP: u8 = 61;
 const NOTE_PING: u8 = 62;
 const NOTE_REWIND: u8 = 63;
 const NOTE_JUMP: u8 = 64;
+const NOTE_PONG: u8 = 65;
 const CONTROL_CHANGE: u8 = 0xB0;
 const CC_POSITION: u8 = 20; // 20, 21, 22: low, middle, high 7 bits
 
@@ -43,9 +65,15 @@ const PING_TIMEOUT: Duration = Duration::from_millis(1500);
 
 // Shown when FL doesn't answer a ping. Covers every reason we can't tell
 // apart from here.
+#[cfg(target_os = "macos")]
 pub const NO_ANSWER: &str = "FL Studio didn't answer. Check that FL is open, and that in \
     Options > MIDI settings both the \"Beat Visualiser\" input (controller type \"Beat \
     Visualiser\") and the \"Beat Visualiser\" output are enabled with the same port number.";
+#[cfg(not(target_os = "macos"))]
+pub const NO_ANSWER: &str = "FL Studio didn't answer. Check that FL is open, and that in \
+    Options > MIDI settings the \"Beat Visualiser\" input (controller type \"Beat \
+    Visualiser\") and the \"Beat Visualiser Reply\" output are enabled with the same port \
+    number.";
 
 // The MIDI connection to FL, kept in Tauri "managed state" (see lib.rs).
 //
@@ -56,8 +84,9 @@ pub const NO_ANSWER: &str = "FL Studio didn't answer. Check that FL is open, and
 //
 // - Mutex: commands can run on different threads, and sending MIDI needs
 //   `&mut`, so only one command may use the connection at a time.
-// - Result: holds the error text if creating the port failed at startup,
-//   so the commands can show the reason instead of a vague message.
+// - Result: holds the error text if the port couldn't be opened, so the
+//   commands can show the reason instead of a vague message. On Windows the
+//   ports may not exist yet at startup; reconnect_if_needed() tries again.
 pub struct FlPort(pub Mutex<Result<MidiOutputConnection, String>>);
 
 /// Sends one FL command (e.g. `send_play`) through the shared port.
@@ -104,14 +133,55 @@ pub fn create_port(name: &str) -> Result<MidiOutputConnection, String> {
         .map_err(|e| format!("Could not create the virtual MIDI port \"{name}\": {e}"))
 }
 
-// Windows has no virtual ports in midir. Later we'll connect to a loopback
-// port instead (Windows MIDI Services on Windows 11, or loopMIDI).
+// Windows: connects to an existing loopback port called `name` (created by
+// the user in loopMIDI or Windows MIDI Services; see the top of this file).
+// TEST: with loopMIDI running and the port created, this finds it.
 #[cfg(not(target_os = "macos"))]
 pub fn create_port(name: &str) -> Result<MidiOutputConnection, String> {
-    Err(format!(
-        "Can't create the MIDI port \"{name}\": virtual MIDI ports only work on macOS so far. \
-         Windows will need a loopback port (Windows MIDI Services or loopMIDI)."
-    ))
+    let output = midir::MidiOutput::new("Beat Visualiser")
+        .map_err(|e| format!("Could not start MIDI: {e}"))?;
+    let port = find_port(&output, name).ok_or_else(|| missing_port(name))?;
+    output
+        .connect(&port, "Beat Visualiser")
+        .map_err(|e| format!("Could not open the MIDI port \"{name}\": {e}"))
+}
+
+// The port called `name` among the ports `io` sees, by exact name (case and
+// spaces at the ends ignored).
+#[cfg(not(target_os = "macos"))]
+fn find_port<T: midir::MidiIO>(io: &T, name: &str) -> Option<T::Port> {
+    io.ports()
+        .into_iter()
+        .find(|p| io.port_name(p).is_ok_and(|n| port_name_matches(&n, name)))
+}
+
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn port_name_matches(found: &str, wanted: &str) -> bool {
+    found.trim().eq_ignore_ascii_case(wanted.trim())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn missing_port(name: &str) -> String {
+    format!(
+        "There's no MIDI port called \"{name}\". Create it in loopMIDI (two ports: \
+         \"{PORT_NAME}\" and \"{LISTEN_PORT_NAME}\"), then try again."
+    )
+}
+
+/// Opens the ports that failed before (on Windows, the user may create the
+/// loopback ports after the app started). Ports that work are left alone.
+/// Called before anything uses them: setup's status, Test connection, a take.
+pub fn reconnect_if_needed(port: &FlPort, listener: &FlListener) {
+    if let Ok(mut guard) = port.0.lock()
+        && guard.is_err()
+    {
+        *guard = create_port(PORT_NAME);
+    }
+    if let Ok(mut guard) = listener.connection.lock()
+        && guard.is_err()
+    {
+        *guard = open_listener(LISTEN_PORT_NAME, Arc::clone(&listener.last_pong));
+    }
 }
 
 pub fn send_ping(conn: &mut MidiOutputConnection) -> Result<(), String> {
@@ -157,81 +227,90 @@ fn position_parts(ms: u32) -> [u8; 3] {
     ]
 }
 
-// Listens for FL's answers on a virtual MIDI input, kept in managed state
-// next to FlPort for the whole app run (FL only sees the port while it
-// exists). The callback runs on midir's own thread and only stores WHEN the
-// last ping answer arrived; ping() reads that.
+// Listens for FL's answers, kept in managed state next to FlPort for the
+// whole app run. The callback runs on midir's own thread and only stores
+// WHEN the last ping answer arrived; ping() reads that.
 pub struct FlListener {
-    // Keeps the port alive; never read. Mutex: managed state must be Sync.
-    _connection: Mutex<Option<MidiInputConnection<()>>>,
-    startup_error: Option<String>,
+    // The open input (kept alive by holding it), or why it couldn't be
+    // opened. Mutex: managed state must be Sync, and reconnecting replaces it.
+    connection: Mutex<Result<MidiInputConnection<()>, String>>,
     last_pong: Arc<Mutex<Option<Instant>>>,
 }
 
 impl FlListener {
-    /// Ok if the input port was created at startup, otherwise the reason.
+    /// Ok if the input is open, otherwise the reason it isn't.
     pub fn check(&self) -> Result<(), String> {
-        match &self.startup_error {
-            None => Ok(()),
-            Some(e) => Err(format!("No MIDI input: {e}")),
+        let guard = self
+            .connection
+            .lock()
+            .map_err(|_| "MIDI input is unusable after an earlier crash.".to_string())?;
+        match guard.as_ref() {
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("No MIDI input: {e}")),
         }
     }
 }
 
-// FL's answer to a ping: note-on 62 with a velocity above 0, any channel.
-// Only the macOS listener uses it so far.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+// FL's answer to a ping: note-on 65 with a velocity above 0, any channel.
+// Note 62 too: that was the answer before 65 (an FL that still runs the old
+// script, until "Reload script").
 fn is_pong(message: &[u8]) -> bool {
-    message.len() >= 3 && message[0] & 0xF0 == NOTE_ON && message[1] == NOTE_PING && message[2] > 0
+    message.len() >= 3
+        && message[0] & 0xF0 == NOTE_ON
+        && (message[1] == NOTE_PONG || message[1] == NOTE_PING)
+        && message[2] > 0
 }
 
-#[cfg(target_os = "macos")]
 pub fn create_listener(name: &str) -> FlListener {
+    let last_pong = Arc::new(Mutex::new(None));
+    let connection = open_listener(name, Arc::clone(&last_pong));
+    FlListener {
+        connection: Mutex::new(connection),
+        last_pong,
+    }
+}
+
+// What the input does with every message: note the time of a pong.
+// `last_pong` is the listener's own slot (Arc = shared ownership).
+fn on_message(last_pong: Arc<Mutex<Option<Instant>>>) -> impl FnMut(u64, &[u8], &mut ()) + Send {
+    move |_time, message, _| {
+        if is_pong(message)
+            && let Ok(mut last) = last_pong.lock()
+        {
+            *last = Some(Instant::now());
+        }
+    }
+}
+
+// macOS: creates a virtual input called `name`, which FL sees as an output.
+#[cfg(target_os = "macos")]
+fn open_listener(
+    name: &str,
+    last_pong: Arc<Mutex<Option<Instant>>>,
+) -> Result<MidiInputConnection<()>, String> {
     use midir::os::unix::VirtualInput;
 
-    let last_pong = Arc::new(Mutex::new(None));
-    // The callback gets its own handle to the same Mutex (Arc = shared ownership).
-    let pong_writer = Arc::clone(&last_pong);
-    let result = midir::MidiInput::new(name)
-        .map_err(|e| format!("Could not start MIDI input: {e}"))
-        .and_then(|input| {
-            input
-                .create_virtual(
-                    name,
-                    move |_time, message, _| {
-                        if is_pong(message)
-                            && let Ok(mut last) = pong_writer.lock()
-                        {
-                            *last = Some(Instant::now());
-                        }
-                    },
-                    (),
-                )
-                .map_err(|e| format!("Could not create the virtual MIDI input \"{name}\": {e}"))
-        });
-    match result {
-        Ok(connection) => FlListener {
-            _connection: Mutex::new(Some(connection)),
-            startup_error: None,
-            last_pong,
-        },
-        Err(e) => FlListener {
-            _connection: Mutex::new(None),
-            startup_error: Some(e),
-            last_pong,
-        },
-    }
+    let input =
+        midir::MidiInput::new(name).map_err(|e| format!("Could not start MIDI input: {e}"))?;
+    input
+        .create_virtual(name, on_message(last_pong), ())
+        .map_err(|e| format!("Could not create the virtual MIDI input \"{name}\": {e}"))
 }
 
+// Windows: connects to the existing loopback port called `name`, the one FL
+// sends its answers into.
+// TEST: the pong arrives (see the ignored test in this file).
 #[cfg(not(target_os = "macos"))]
-pub fn create_listener(name: &str) -> FlListener {
-    FlListener {
-        _connection: Mutex::new(None),
-        startup_error: Some(format!(
-            "Can't create the MIDI input \"{name}\": virtual MIDI ports only work on macOS so far."
-        )),
-        last_pong: Arc::new(Mutex::new(None)),
-    }
+fn open_listener(
+    name: &str,
+    last_pong: Arc<Mutex<Option<Instant>>>,
+) -> Result<MidiInputConnection<()>, String> {
+    let input = midir::MidiInput::new("Beat Visualiser")
+        .map_err(|e| format!("Could not start MIDI input: {e}"))?;
+    let port = find_port(&input, name).ok_or_else(|| missing_port(name))?;
+    input
+        .connect(&port, "Beat Visualiser", on_message(last_pong), ())
+        .map_err(|e| format!("Could not open the MIDI port \"{name}\": {e}"))
 }
 
 /// Sends a ping and waits for FL's answer. Ok(round trip time) if FL
@@ -269,13 +348,51 @@ fn send_note(conn: &mut MidiOutputConnection, note: u8) -> Result<(), String> {
         .map_err(|e| format!("Could not send MIDI note-off {note}: {e}"))
 }
 
+// Pure tests: no MIDI ports needed, so they run on every system.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn positions_split_into_7_bit_parts() {
+        assert_eq!(position_parts(0), [0, 0, 0]);
+        assert_eq!(position_parts(127), [127, 0, 0]);
+        assert_eq!(position_parts(128), [0, 1, 0]);
+        // 83 s = 83000 ms = 5 * 16384 + 8 * 128 + 56
+        assert_eq!(position_parts(83_000), [56, 8, 5]);
+        let [a, b, c] = position_parts(MAX_JUMP_MS);
+        assert_eq!((a, b, c), (127, 127, 127));
+    }
+
+    #[test]
+    fn pong_is_note_on_65_or_the_old_62() {
+        assert!(is_pong(&[0x90, 65, 127]));
+        assert!(is_pong(&[0x90, 62, 127])); // the old script's answer
+        assert!(is_pong(&[0x93, 65, 1])); // any channel
+        assert!(!is_pong(&[0x90, 65, 0])); // velocity 0 = note-off
+        assert!(!is_pong(&[0x80, 65, 64]));
+        assert!(!is_pong(&[0x90, 60, 127]));
+    }
+
+    #[test]
+    fn port_names_match_exactly() {
+        assert!(port_name_matches("Beat Visualiser", "Beat Visualiser"));
+        assert!(port_name_matches(" beat visualiser ", "Beat Visualiser"));
+        // The reply port must never be taken for the main one
+        assert!(!port_name_matches(
+            "Beat Visualiser Reply",
+            "Beat Visualiser"
+        ));
+    }
+}
+
 // Round trip test without FL: create the port, listen to it with a MIDI
 // input in the same process, send play + stop + rewind, check the 6
 // messages arrive.
 // Uses its own port name so it never triggers a running FL (or clashes with
 // the Python test script, which creates a "Beat Visualiser" port too).
 #[cfg(all(test, target_os = "macos"))]
-mod tests {
+mod macos_tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -346,31 +463,48 @@ mod tests {
         let mut fake_fl = output.connect(&target, "fake fl").unwrap();
         let answer = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(50));
-            fake_fl.send(&[0x90, 62, 127]).unwrap();
+            fake_fl.send(&[0x90, 65, 127]).unwrap();
         });
 
         let round_trip = ping(&port, &listener).expect("no answer");
         answer.join().unwrap();
         assert!(round_trip < PING_TIMEOUT);
     }
+}
 
+// Windows, with loopMIDI and both ports created, no FL needed: sends a pong
+// into "Beat Visualiser Reply" and checks the listener hears it. Proves the
+// ports are found by name and that messages arrive. Run in PowerShell:
+//   cargo test loopback_reply_port -- --ignored --nocapture
+// TEST: passes once both loopMIDI ports exist.
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::*;
+
+    // Automatic: without loopMIDI (or with it, the name is made up), a
+    // missing port gives the "create it in loopMIDI" message, not a crash.
     #[test]
-    fn positions_split_into_7_bit_parts() {
-        assert_eq!(position_parts(0), [0, 0, 0]);
-        assert_eq!(position_parts(127), [127, 0, 0]);
-        assert_eq!(position_parts(128), [0, 1, 0]);
-        // 83 s = 83000 ms = 5 * 16384 + 8 * 128 + 56
-        assert_eq!(position_parts(83_000), [56, 8, 5]);
-        let [a, b, c] = position_parts(MAX_JUMP_MS);
-        assert_eq!((a, b, c), (127, 127, 127));
+    fn a_missing_port_says_what_to_do() {
+        let error = create_port("Beat Visualiser Missing Test")
+            .err()
+            .expect("the port shouldn't exist");
+        assert!(error.contains("loopMIDI"), "got: {error}");
     }
 
     #[test]
-    fn pong_is_note_on_62() {
-        assert!(is_pong(&[0x90, 62, 127]));
-        assert!(is_pong(&[0x93, 62, 1])); // any channel
-        assert!(!is_pong(&[0x90, 62, 0])); // velocity 0 = note-off
-        assert!(!is_pong(&[0x80, 62, 64]));
-        assert!(!is_pong(&[0x90, 60, 127]));
+    #[ignore]
+    fn loopback_reply_port_reaches_the_listener() {
+        let listener = create_listener(LISTEN_PORT_NAME);
+        listener.check().expect("listener");
+        // Play FL's part: send into the reply port's output side.
+        let mut fake_fl = create_port(LISTEN_PORT_NAME).expect("reply port as output");
+        let sent = Instant::now();
+        fake_fl.send(&[NOTE_ON, NOTE_PONG, 127]).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let last = *listener.last_pong.lock().unwrap();
+        assert!(last.is_some_and(|at| at >= sent), "no pong arrived");
+        // And the main port opens too
+        create_port(PORT_NAME).expect("main port");
+        println!("both ports work");
     }
 }
