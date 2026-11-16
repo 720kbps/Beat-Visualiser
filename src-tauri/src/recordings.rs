@@ -8,10 +8,11 @@ use std::time::SystemTime;
 /// (`$VIDEO/Beat Visualiser/**`).
 pub const FOLDER_NAME: &str = "Beat Visualiser";
 
-/// Returns the newest `.mov` file in `folder` (by modified time), or None if
-/// there is none. A folder that doesn't exist yet (nothing recorded) is not
+/// Returns the newest recording in `folder` (by modified time), or None if
+/// there is none. A recording is a `.mov` (macOS), or a `take-*.mp4`
+/// (Windows; the `take-` keeps exports, also .mp4, out). A folder that doesn't exist yet (nothing recorded) is not
 /// an error, it just has no recordings.
-pub fn newest_mov(folder: &Path) -> Result<Option<PathBuf>, String> {
+pub fn newest_recording(folder: &Path) -> Result<Option<PathBuf>, String> {
     let entries = match std::fs::read_dir(folder) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -23,7 +24,7 @@ pub fn newest_mov(folder: &Path) -> Result<Option<PathBuf>, String> {
         // Skip entries we can't read instead of failing the whole search.
         let Ok(entry) = entry else { continue };
         let path = entry.path();
-        if !is_mov(&path) {
+        if !is_recording(&path) {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
@@ -44,11 +45,12 @@ pub fn newest_mov(folder: &Path) -> Result<Option<PathBuf>, String> {
     Ok(newest.map(|(_, path)| path))
 }
 
-// .mov in any letter case.
-fn is_mov(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("mov"))
+// .mov, or take-*.mp4, in any letter case.
+fn is_recording(path: &Path) -> bool {
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    extension.eq_ignore_ascii_case("mov")
+        || (extension.eq_ignore_ascii_case("mp4") && name.starts_with("take-"))
 }
 
 #[cfg(test)]
@@ -76,7 +78,7 @@ mod tests {
     }
 
     #[test]
-    fn picks_the_newest_mov() {
+    fn picks_the_newest_recording() {
         let folder = temp_folder("newest");
         touch(&folder, "old.mov", 1_000);
         touch(&folder, "new.MOV", 3_000);
@@ -86,16 +88,27 @@ mod tests {
         // A folder named like a recording: ignored
         std::fs::create_dir(folder.join("folder.mov")).unwrap();
 
-        let newest = newest_mov(&folder).unwrap();
+        let newest = newest_recording(&folder).unwrap();
         assert_eq!(newest, Some(folder.join("new.MOV")));
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    #[test]
+    fn windows_takes_count_but_exports_dont() {
+        let folder = temp_folder("mp4");
+        touch(&folder, "take-100-1.mp4", 1_000);
+        // Newer, but an export: ignored
+        touch(&folder, "export-200.mp4", 2_000);
+        let newest = newest_recording(&folder).unwrap();
+        assert_eq!(newest, Some(folder.join("take-100-1.mp4")));
         std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]
     fn empty_or_missing_folder_gives_none() {
         let folder = temp_folder("empty");
-        assert_eq!(newest_mov(&folder).unwrap(), None);
+        assert_eq!(newest_recording(&folder).unwrap(), None);
         std::fs::remove_dir_all(&folder).unwrap();
-        assert_eq!(newest_mov(&folder).unwrap(), None); // now missing
+        assert_eq!(newest_recording(&folder).unwrap(), None); // now missing
     }
 }

@@ -38,3 +38,11 @@ tauri-plugin-dialog = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
 screencapturekit = { version = "11.1.2", features = ["macos_15_0"] }
 objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGWindow"] }
+
+# Windows only (not compiled on macOS): Windows.Graphics.Capture for listing
+# and recording windows, with its Media Foundation encoder for the .mp4.
+# UNTESTED on Windows so far (see recorder.rs, "Windows" section).
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-capture = "2.0.1"
+# Same version windows-capture uses; only for IsIconic and the window list.
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging"] }

@@ -4,9 +4,14 @@ mod fl_midi;
 mod fl_script;
 mod permission;
 mod recorder;
+// Windows versions of the recorder and window list. Not compiled on macOS.
+#[cfg(target_os = "windows")]
+mod recorder_windows;
 mod recordings;
 mod take;
 mod window_list;
+#[cfg(target_os = "windows")]
+mod window_list_windows;
 
 use std::sync::Mutex;
 
@@ -87,7 +92,7 @@ fn recordings_folder(app: &tauri::AppHandle) -> Result<std::path::PathBuf, Strin
 #[tauri::command]
 async fn latest_recording(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let folder = recordings_folder(&app)?;
-    let newest = recordings::newest_mov(&folder)?;
+    let newest = recordings::newest_recording(&folder)?;
     // to_string_lossy: paths aren't guaranteed to be valid UTF-8, JS strings are.
     Ok(newest.map(|path| path.to_string_lossy().into_owned()))
 }

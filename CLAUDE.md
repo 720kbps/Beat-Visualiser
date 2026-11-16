@@ -204,7 +204,9 @@ Phases (the full checklist lives in Bogdan's "Beat Visualizer Build Plan" page):
 
 **Current repo state (as of 2026-11-15):**
 
-The full workflow works on **macOS** for one beat: drop beat → pick 1–3 FL windows → "Play & record" (FL plays from the start in song mode while the windows record) → preview synced by audio cross-correlation → export MP4. Windows (the OS) is not started.
+The full workflow works on **macOS** for one beat: drop beat → pick 1–3 FL windows → "Play & record" (FL plays from the section start in song mode while the windows record) → preview synced by audio cross-correlation → export MP4.
+
+**Windows (the OS):** step 1 (window list + video-only recording to H.264 `.mp4`) is written blind in `window_list_windows.rs` and `recorder_windows.rs`, behind `#[cfg(target_os = "windows")]`. It type-checks for `x86_64-pc-windows-msvc` but has never run; `docs/windows-testing.md` is the test checklist (`TEST:` comments in the code). MIDI and audio on Windows are not started.
 
 - **Phases:**
   - Phases 0–3 are done on macOS.

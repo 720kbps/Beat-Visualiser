@@ -1,5 +1,7 @@
 // Records one window to a video file.
 //
+// Windows: see recorder_windows.rs (same methods).
+//
 // macOS: ScreenCaptureKit's SCRecordingOutput (macOS 15+). We hand it the
 // stream and a file path, and macOS encodes and writes the movie itself
 // (hardware HEVC). No frames pass through our code.
@@ -8,7 +10,10 @@
 // not ProRes. ProRes would need our own AVAssetWriter fed with the raw
 // frames, which is a lot more code. HEVC is fine for the spike.
 
+// Windows has its own file with its own imports (recorder_windows.rs).
+#[cfg(not(target_os = "windows"))]
 use std::path::Path;
+#[cfg(not(target_os = "windows"))]
 use std::time::{Duration, Instant};
 
 // How a take uses this (see take.rs):
@@ -266,27 +271,31 @@ fn is_audible(sample: &screencapturekit::cm::CMSampleBuffer) -> bool {
     false
 }
 
-// Windows: not implemented yet (Windows.Graphics.Capture comes later). Same
-// methods so the take code compiles; prepare() fails before anything happens.
-#[cfg(not(target_os = "macos"))]
+// Windows: Windows.Graphics.Capture, in recorder_windows.rs (UNTESTED).
+#[cfg(target_os = "windows")]
+pub use crate::recorder_windows::Recording;
+
+// Other systems (Linux): not supported. Same methods so the take code
+// compiles; prepare() fails before anything happens.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub struct Recording;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 impl Recording {
     pub fn prepare(_window_id: u32, _path: &Path) -> Result<Recording, String> {
-        Err("Window recording is only implemented on macOS for now.".to_string())
+        Err("Window recording only works on macOS and Windows.".to_string())
     }
 
     pub fn start(&self) -> Result<(), String> {
-        Err("Window recording is only implemented on macOS for now.".to_string())
+        Err("Window recording only works on macOS and Windows.".to_string())
     }
 
     pub fn wait_until_started(&self, _timeout: Duration) -> Result<Instant, String> {
-        Err("Window recording is only implemented on macOS for now.".to_string())
+        Err("Window recording only works on macOS and Windows.".to_string())
     }
 
     pub fn check_error(&self) -> Result<(), String> {
-        Err("Window recording is only implemented on macOS for now.".to_string())
+        Err("Window recording only works on macOS and Windows.".to_string())
     }
 
     pub fn has_audio(&self) -> bool {
@@ -294,6 +303,6 @@ impl Recording {
     }
 
     pub fn finish(self) -> Result<String, String> {
-        Err("Window recording is only implemented on macOS for now.".to_string())
+        Err("Window recording only works on macOS and Windows.".to_string())
     }
 }

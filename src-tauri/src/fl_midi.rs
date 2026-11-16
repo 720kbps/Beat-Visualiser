@@ -179,6 +179,8 @@ impl FlListener {
 }
 
 // FL's answer to a ping: note-on 62 with a velocity above 0, any channel.
+// Only the macOS listener uses it so far.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn is_pong(message: &[u8]) -> bool {
     message.len() >= 3 && message[0] & 0xF0 == NOTE_ON && message[1] == NOTE_PING && message[2] > 0
 }

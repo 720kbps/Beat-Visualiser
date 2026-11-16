@@ -50,6 +50,12 @@ pub struct TakeClip {
     pub has_audio: bool,
 }
 
+// The recording's file type: what each platform's recorder writes.
+#[cfg(target_os = "macos")]
+const RECORDING_EXTENSION: &str = "mov";
+#[cfg(not(target_os = "macos"))]
+const RECORDING_EXTENSION: &str = "mp4";
+
 /// The most windows one take can record.
 pub const MAX_WINDOWS: usize = 3;
 
@@ -232,6 +238,7 @@ fn check_window_ids(window_ids: &[u32]) -> Result<(), String> {
 // One file per window, all with the same timestamp and a number, so three
 // windows recorded in the same second don't collide:
 // ~/Movies/Beat Visualiser/take-1763112345-1.mov, -2.mov, -3.mov
+// (.mp4 on Windows, see recorder_windows.rs)
 fn take_paths(folder: &Path, count: usize) -> Vec<PathBuf> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -239,7 +246,7 @@ fn take_paths(folder: &Path, count: usize) -> Vec<PathBuf> {
         .unwrap_or(0);
     let mut paths = Vec::new();
     for n in 1..=count {
-        paths.push(folder.join(format!("take-{timestamp}-{n}.mov")));
+        paths.push(folder.join(format!("take-{timestamp}-{n}.{RECORDING_EXTENSION}")));
     }
     paths
 }

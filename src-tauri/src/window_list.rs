@@ -117,9 +117,13 @@ pub fn list_windows(title_filter: Option<String>) -> Result<Vec<WindowInfo>, Str
     Ok(result)
 }
 
-#[cfg(not(target_os = "macos"))]
+// Windows: in window_list_windows.rs (UNTESTED).
+#[cfg(target_os = "windows")]
+pub use crate::window_list_windows::list_windows;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn list_windows(_title_filter: Option<String>) -> Result<Vec<WindowInfo>, String> {
-    Err("Window listing is only implemented on macOS for now.".to_string())
+    Err("Window listing only works on macOS and Windows.".to_string())
 }
 
 /// Tests only. A test binary has no NSApplication, so CoreGraphics isn't set
