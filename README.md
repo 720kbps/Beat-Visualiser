@@ -10,7 +10,7 @@ It controls FL Studio, **automatically records a plugin window while the beat pl
 
 1. **One-time setup.** The app installs a small FL Studio MIDI script. You select it once in FL's MIDI settings and press "Test connection".
 2. **Drop your beat** (an exported WAV or MP3).
-3. **The best section is picked for you:** the strongest 15, 30 or 60 seconds, cut on the bar. You can drag it.
+3. **The best section is picked for you:** the strongest 15, 30 or 60 seconds, cut on the bar once you type the BPM. You can drag it.
 4. **Pick a plugin window** from the list of open windows in FL.
 5. **Record.** The app jumps FL to the section start, plays, records the window, and stops FL at the end.
 6. **Pick a theme** and see a live preview: your recording on the device screen, with the waveform and a moving playhead.
@@ -70,6 +70,8 @@ fl-script/         the FL Studio MIDI script installed into FL
 
 ## Development
 
+New to the code? Start with [DEVELOPING.md](DEVELOPING.md): how the pieces fit together, what one button press does, and where to work.
+
 Requirements: [Node.js](https://nodejs.org/), the [Rust toolchain](https://rustup.rs/), and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS (Xcode on macOS; Microsoft C++ Build Tools and WebView2 on Windows).
 
 ```sh
@@ -90,7 +92,7 @@ The first `tauri dev` compiles all Rust dependencies and takes a few minutes. La
 - [x] **Phase 1, spike:** list windows from Rust, record a plugin window, FL script for play/stop, trigger FL from the app (macOS; Windows not started)
 - [x] **Phase 2, audio in:** drop zone, decoding, waveform with playhead
 - [x] **Phase 3, first theme:** LCD sampler theme with the recording as a video texture (plus a Stack theme)
-- [ ] **Phase 4:** automatic highlight detection
+- [x] **Phase 4:** automatic highlight detection (you type the BPM; it picks and bar-snaps the section)
 - [ ] **Phase 5:** full record flow and audio sync (mostly done on macOS)
 - [x] **Phase 6:** MP4 export (macOS; upload test pending)
 - [ ] **Phase 7:** onboarding and polish

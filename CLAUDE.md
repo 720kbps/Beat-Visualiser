@@ -208,25 +208,28 @@ The full workflow works on **macOS** for one beat: drop beat → pick 1–3 FL w
 
 - **Phases:**
   - Phases 0–3 are done on macOS.
-  - Phase 5 is mostly done: song mode, rewind, recording exactly the section length, system audio, cross-correlation, and the window picker. Not done: jumping to an arbitrary song position (needed once Phase 4 picks sections), the script reporting position back, and greying out docked windows.
+  - Phase 5 is mostly done: song mode, jumping to the section start, recording exactly the section length, system audio, cross-correlation, and the window picker. Not done: the script reporting position back, and greying out docked windows.
   - Phase 6 is done except the ffmpeg benchmark, which was decided against (WebCodecs, about 55 fps measured) and the TikTok/Instagram upload test.
-  - Phase 4 (highlight detection) is not started; the section is always 0 → 15/30/60 s.
+  - Phase 4 is done without BPM detection (Bogdan decided: the user types BPM and key; Essentia.js was dropped, it's AGPL) and without the librosa prototype (deferred). `engine/analysis/`: RMS + bass + spectral flux score per 50 ms, window search with 10% intro/outro skip, bar snapping from the typed BPM (bar 1 at 0 s), lengths a multiple of 4 bars. The section is draggable on the waveform.
 - **Rust (`src-tauri/src/`):**
   - `window_list.rs`, `recorder.rs` (ScreenCaptureKit SCRecordingOutput, HEVC .mov with FL's audio, macOS 15+)
   - `take.rs` (`record_take(window_ids, seconds)` → per-clip `play_offset`, `has_audio`)
-  - `fl_midi.rs` (virtual port "Beat Visualiser"; notes 60 play, 61 stop, 63 rewind + song mode, 62 reserved for ping)
+  - `fl_midi.rs` (virtual ports "Beat Visualiser", out and in; notes 60 play, 61 stop, 62 ping (the script answers on FL's linked output), 63 rewind, 64 jump to the ms position sent as CC 20/21/22; rewind and jump ensure song mode). Every take pings first, then jumps to the section start.
+  - `fl_script.rs` (the FL script is compiled in and copied into FL's `Settings/Hardware` on launch), `permission.rs` (Screen Recording status/request)
   - `audio_file.rs`, `recordings.rs`, `export_file.rs`
   - Files live in `~/Movies/Beat Visualiser/`.
-- **FL script:** `fl-script/BeatVisualiser/`, installed by copying it into FL's `Settings/Hardware`. After changing it, click "Reload script" in FL.
+- **FL script:** `fl-script/BeatVisualiser/`, installed by the app on launch. After changing it, restart `tauri dev`, then click "Reload script" in FL.
 - **Engine (`src/engine/`):**
   - `audio/`: decode, peaks, player
   - `frame/`: deterministic FrameData, rms/bass per 10 ms
   - `render/`: Three.js, fixed 1080×1920, shaders write display sRGB
-  - `visualizers/`: `lcd-sampler` (GLSL split into 5 files), `stack` (title + up to 3 windows), `test-pattern`; themes declare `pluginSlots`; params support number/color/toggle/text, max 5
+  - `visualizers/`: `lcd-sampler` (GLSL split into 5 files, device drawn at 80% to leave the title area free), `stack` (up to 3 windows), `test-pattern`; themes declare `pluginSlots`; params support number/color/toggle/text, max 5
+  - `overlay/`: the title card (name, BPM, key, producer tag), drawn over every theme by `render/render-frame.ts` in preview and export
   - `video/`: preview clip sync
   - `sync/`: cross-correlation
   - `export/`: WebCodecs + Mediabunny 1.65.0 (MPL-2.0); AAC needs Safari 26's WebKit
-- **UI:** `src/ui/App.svelte` is still a spike-style numbered flow; onboarding is not built.
+- **UI:** `src/ui/App.svelte` is a numbered step flow styled after the build-plan mockup (tokens in `src/app.css`). `Setup.svelte` is the onboarding (script install, MIDI port, FL settings steps, Test connection, Screen Recording permission); it opens on first launch or when something is missing. The top bar shows the FL connection.
+  - Phase 7: done except the onboarding GIF (not recorded; `public/onboarding/fl-midi-settings.gif`), Windows (loopback MIDI port) and testing on several FL versions / Windows 10 and 11.
 - **Tooling:** ESLint (with the engine-must-not-import-Svelte rule), Prettier (no semicolons, single quotes), and vitest (`npm test`).
 - **Repo:** GitHub `github.com/720kbps/Beat-Visualiser`. Recent commits are local and not pushed.
 - **Known gaps:**
